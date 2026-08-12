@@ -141,23 +141,24 @@ def generate_player_rationale(player_row, gw1_xp=0.0):
 def load_manager_2667805_squad():
     """
     Loads Manager 2667805's real active squad picks with 100% budget utilization (£100.0m spent, £0.0m bank).
+    Formation: 4-4-2 (11 Starters, 4 Bench).
     """
     default_picks = [
-        {"player_id": 1, "role": "🥈 Vice Captain", "cost": 6.0},     # Raya (GKP)
-        {"player_id": 58, "role": "Bench", "cost": 4.0},            # Forster (GKP)
-        {"player_id": 4, "role": "Starter", "cost": 8.0},            # Gabriel (DEF)
-        {"player_id": 388, "role": "Starter", "cost": 6.0},          # Guéhi (DEF)
-        {"player_id": 182, "role": "Starter", "cost": 5.5},          # Muñoz (DEF)
-        {"player_id": 8, "role": "Starter", "cost": 5.5},            # Calafiori (DEF)
-        {"player_id": 34, "role": "Bench", "cost": 4.5},            # Cash (DEF)
-        {"player_id": 426, "role": "Starter", "cost": 12.0},         # B.Fernandes (MID)
-        {"player_id": 427, "role": "Starter", "cost": 8.0},          # Mbeumo (MID)
-        {"player_id": 40, "role": "Starter", "cost": 7.5},           # Rogers (MID)
-        {"player_id": 67, "role": "Starter", "cost": 6.5},           # Rayan (MID)
-        {"player_id": 236, "role": "Starter", "cost": 6.5},          # Dewsbury-Hall (MID)
-        {"player_id": 55, "role": "👑 Captain", "cost": 8.0},        # Watkins (FWD)
-        {"player_id": 106, "role": "Starter", "cost": 8.0},          # Thiago (FWD)
-        {"player_id": 528, "role": "Bench", "cost": 4.0}            # Scarlett (FWD)
+        {"player_id": 1, "name": "Raya", "position": "GKP", "team": "Arsenal", "role": "🥈 Vice Captain", "cost": 6.0},
+        {"player_id": 58, "name": "Forster", "position": "GKP", "team": "Spurs", "role": "Bench", "cost": 4.0},
+        {"player_id": 4, "name": "Gabriel", "position": "DEF", "team": "Arsenal", "role": "Starter", "cost": 8.0},
+        {"player_id": 388, "name": "Guéhi", "position": "DEF", "team": "Crystal Palace", "role": "Starter", "cost": 6.0},
+        {"player_id": 182, "name": "Muñoz", "position": "DEF", "team": "Crystal Palace", "role": "Starter", "cost": 5.5},
+        {"player_id": 8, "name": "Calafiori", "position": "DEF", "team": "Arsenal", "role": "Starter", "cost": 5.5},
+        {"player_id": 34, "name": "Cash", "position": "DEF", "team": "Aston Villa", "role": "Bench", "cost": 4.5},
+        {"player_id": 426, "name": "B.Fernandes", "position": "MID", "team": "Man Utd", "role": "Starter", "cost": 12.0},
+        {"player_id": 427, "name": "Mbeumo", "position": "MID", "team": "Man Utd", "role": "Starter", "cost": 8.0},
+        {"player_id": 40, "name": "Rogers", "position": "MID", "team": "Aston Villa", "role": "Starter", "cost": 7.5},
+        {"player_id": 67, "name": "Cherki", "position": "MID", "team": "Bournemouth", "role": "Starter", "cost": 6.5},
+        {"player_id": 236, "name": "Dewsbury-Hall", "position": "MID", "team": "Everton", "role": "Bench", "cost": 6.5},
+        {"player_id": 55, "name": "Watkins", "position": "FWD", "team": "Aston Villa", "role": "👑 Captain", "cost": 8.0},
+        {"player_id": 106, "name": "Thiago", "position": "FWD", "team": "Brentford", "role": "Starter", "cost": 8.0},
+        {"player_id": 528, "name": "Scarlett", "position": "FWD", "team": "Spurs", "role": "Bench", "cost": 4.0}
     ]
     return pd.DataFrame(default_picks)
 

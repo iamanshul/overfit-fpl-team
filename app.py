@@ -302,8 +302,13 @@ with tab1:
     
     if not active_squad.empty:
         if not matrix.empty and "player_id" in active_squad.columns:
+            for col in ["name", "position", "team", "cost"]:
+                if col not in active_squad.columns and col in matrix.columns:
+                    active_squad = active_squad.merge(matrix[["player_id", col]], on="player_id", how="left")
+            
             opt_cols = [c for c in ["chance_of_playing", "news", "status"] if c in matrix.columns]
             req_cols = ["player_id", f"xP_{start_gw}", "r_goal", "r_assist", "xM", "team_cs_rate"] + opt_cols
+            req_cols = [c for c in req_cols if c in matrix.columns]
             merged_squad = active_squad.merge(
                 matrix[req_cols],
                 on="player_id",
@@ -311,7 +316,17 @@ with tab1:
             ).rename(columns={f"xP_{start_gw}": "GW1_xP"})
         else:
             merged_squad = active_squad.copy()
-            merged_squad["GW1_xP"] = 4.0
+            if "GW1_xP" not in merged_squad.columns:
+                merged_squad["GW1_xP"] = 4.0
+
+        if "position" not in merged_squad.columns:
+            merged_squad["position"] = "MID"
+        if "name" not in merged_squad.columns:
+            merged_squad["name"] = "Player"
+        if "team" not in merged_squad.columns:
+            merged_squad["team"] = "Premier League"
+        if "cost" not in merged_squad.columns:
+            merged_squad["cost"] = 5.0
 
         merged_squad["rationale"] = merged_squad.apply(lambda r: generate_player_rationale(r, r.get("GW1_xP", 4.0)), axis=1)
 
