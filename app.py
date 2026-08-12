@@ -101,8 +101,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Auto-update check (2-hour freshness window for live injury news & press conference updates)
-check_and_auto_update_data(max_age_hours=2)
+# Auto-update check (runs once per session to avoid blocking UI interactions)
+if "data_checked" not in st.session_state:
+    st.session_state["data_checked"] = True
+    try:
+        check_and_auto_update_data(max_age_hours=6)
+    except Exception:
+        pass
 
 # Sidebar Controls
 st.sidebar.title("⚽ Overfit FPL Control Center")
@@ -476,11 +481,19 @@ with tab2:
                 import traceback
                 st.code(traceback.format_exc())
 
+    # Pre-populate optimal squad if not yet computed in session
+    if ("squad_gw1" not in st.session_state or st.session_state["squad_gw1"].empty) and not history_df.empty:
+        squad_gw1, bank_rem = build_gw1_start_of_season_squad(history_df, budget=budget_input, max_unspent_bank=0.0)
+        if not squad_gw1.empty:
+            st.session_state["squad_gw1"] = squad_gw1
+            st.session_state["bank_rem"] = bank_rem
+
     if "squad_gw1" in st.session_state and not st.session_state["squad_gw1"].empty:
         squad_gw1 = st.session_state["squad_gw1"]
         bank_rem = st.session_state["bank_rem"]
 
-        starters = squad_gw1[squad_gw1["role"].isin(["Starter", "👑 Captain"])]
+        starters = squad_gw1[squad_gw1["role"] != "Bench"]
+        bench = squad_gw1[squad_gw1["role"] == "Bench"]
         cap_row = squad_gw1[squad_gw1["role"] == "👑 Captain"]
         cap_bonus_gw1 = cap_row.iloc[0]["GW1_xP"] if not cap_row.empty and "GW1_xP" in cap_row.columns else (cap_row.iloc[0]["xP_1"] if not cap_row.empty and "xP_1" in cap_row.columns else 0.0)
         cap_bonus_horiz = cap_row.iloc[0]["xP_horizon_sum"] if not cap_row.empty and "xP_horizon_sum" in cap_row.columns else 0.0
@@ -539,18 +552,17 @@ with tab2:
         
         col_st, col_bn = st.columns([2, 1])
         with col_st:
-            st.markdown("### ⚽ Starting 11 Starters")
+            st.markdown(f"### ⚽ Starting 11 Starters ({len(starters)} Players)")
             for pos in ["GKP", "DEF", "MID", "FWD"]:
-                pos_p = squad_gw1[(squad_gw1["role"].isin(["Starter", "👑 Captain"])) & (squad_gw1["position"] == pos)]
+                pos_p = starters[starters["position"] == pos]
                 if not pos_p.empty:
                     st.markdown(f"**{pos}s:**")
                     for _, p_row in pos_p.iterrows():
                         render_player_card(p_row)
 
         with col_bn:
-            st.markdown("### 🪑 Bench Enablers")
-            bench_p = squad_gw1[squad_gw1["role"] == "Bench"]
-            for _, p_row in bench_p.iterrows():
+            st.markdown(f"### 🪑 Bench Enablers ({len(bench)} Players)")
+            for _, p_row in bench.iterrows():
                 render_player_card(p_row)
 
         # Transparent Alternative Comparisons ("Why X over Y?")
