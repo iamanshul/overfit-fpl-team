@@ -772,17 +772,25 @@ with tab6:
 # --- TAB 7: 6-GW ROADMAP ---
 with tab7:
     st.header(f"📋 6-Gameweek Squad Roadmap (Target GW {start_gw})")
-    if not matrix.empty:
-        optimizer = MultiPeriodMILP(matrix)
-        active_squad_curr, curr_bank, curr_fts = get_active_squad_state()
-        if not active_squad_curr.empty:
-            base_squad_ids = active_squad_curr["player_id"].tolist()
-            purchase_prices = dict(zip(active_squad_curr["player_id"], active_squad_curr.get("purchase_price", active_squad_curr["cost"])))
-        else:
-            base_squad_ids = matrix.sort_values("xP_horizon_sum", ascending=False)["player_id"].head(15).tolist()
-            purchase_prices = None
+    st.caption("Solves rolling-horizon Model Predictive Control (MPC) to optimize transfer timing, FT accumulation, and captaincy.")
 
-        plan = optimizer.solve_rolling_horizon(base_squad_ids, initial_bank=curr_bank, initial_fts=curr_fts, purchase_prices=purchase_prices)
+    if st.button("🚀 Calculate 6-GW Transfer Roadmap", type="primary"):
+        with st.spinner("Solving Rolling Horizon Model Predictive Control (MPC)..."):
+            if not matrix.empty:
+                optimizer = MultiPeriodMILP(matrix)
+                active_squad_curr, curr_bank, curr_fts = get_active_squad_state()
+                if not active_squad_curr.empty:
+                    base_squad_ids = active_squad_curr["player_id"].tolist()
+                    purchase_prices = dict(zip(active_squad_curr["player_id"], active_squad_curr.get("purchase_price", active_squad_curr["cost"])))
+                else:
+                    base_squad_ids = matrix.sort_values("xP_horizon_sum", ascending=False)["player_id"].head(15).tolist()
+                    purchase_prices = None
+
+                plan = optimizer.solve_rolling_horizon(base_squad_ids, initial_bank=curr_bank, initial_fts=curr_fts, purchase_prices=purchase_prices)
+                st.session_state["roadmap_plan"] = plan
+
+    if "roadmap_plan" in st.session_state and st.session_state["roadmap_plan"]:
+        plan = st.session_state["roadmap_plan"]
         if plan.get("status") == "Optimal":
             k1, k2, k3, k4 = st.columns(4)
             with k1: st.metric("Projected Points", f"{plan['projected_points_gw1']:.2f} pts")
@@ -802,19 +810,29 @@ with tab7:
 # --- TAB 8: CHIP EVALUATOR ---
 with tab8:
     st.header("🃏 Chip Reservation Hurdle Curve Evaluator")
-    if not matrix.empty:
-        optimizer = MultiPeriodMILP(matrix)
-        active_squad_curr, curr_bank, curr_fts = get_active_squad_state()
-        if not active_squad_curr.empty:
-            base_squad_ids = active_squad_curr["player_id"].tolist()
-            purchase_prices = dict(zip(active_squad_curr["player_id"], active_squad_curr.get("purchase_price", active_squad_curr["cost"])))
-        else:
-            base_squad_ids = matrix.sort_values("xP_horizon_sum", ascending=False)["player_id"].head(15).tolist()
-            purchase_prices = None
+    st.caption("Evaluates dynamic time-decayed hurdle curves (Rho thresholds) across Wildcard, Free Hit, Bench Boost, and Triple Captain.")
 
-        chip_data = optimizer.evaluate_chip_deltas(base_squad_ids, initial_bank=curr_bank, initial_fts=curr_fts, purchase_prices=purchase_prices)
-        evaluator = ChipEvaluator()
-        report = evaluator.evaluate(chip_data["standard_plan"], chip_data["wildcard_plan"], chip_data["freehit_plan"])
+    if st.button("⚡ Calculate Chip Hurdle Curves", type="primary"):
+        with st.spinner("Evaluating shadow solves across standard, wildcard, and free-hit horizons..."):
+            if not matrix.empty:
+                optimizer = MultiPeriodMILP(matrix)
+                active_squad_curr, curr_bank, curr_fts = get_active_squad_state()
+                if not active_squad_curr.empty:
+                    base_squad_ids = active_squad_curr["player_id"].tolist()
+                    purchase_prices = dict(zip(active_squad_curr["player_id"], active_squad_curr.get("purchase_price", active_squad_curr["cost"])))
+                else:
+                    base_squad_ids = matrix.sort_values("xP_horizon_sum", ascending=False)["player_id"].head(15).tolist()
+                    purchase_prices = None
+
+                chip_data = optimizer.evaluate_chip_deltas(base_squad_ids, initial_bank=curr_bank, initial_fts=curr_fts, purchase_prices=purchase_prices)
+                evaluator = ChipEvaluator()
+                report = evaluator.evaluate(chip_data["standard_plan"], chip_data["wildcard_plan"], chip_data["freehit_plan"])
+                st.session_state["chip_data"] = chip_data
+                st.session_state["chip_report"] = report
+
+    if "chip_data" in st.session_state and "chip_report" in st.session_state:
+        chip_data = st.session_state["chip_data"]
+        report = st.session_state["chip_report"]
         
         st.subheader(f"Tactical Recommendation: **{report['summary_recommendation']}**")
         
