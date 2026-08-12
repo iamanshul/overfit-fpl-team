@@ -197,41 +197,56 @@ def get_active_squad_state():
     purchase price, and dynamically computed 50% profit tax selling price.
     """
     initialize_squad_tables()
-    conn = get_db_connection()
     try:
-        squad_df = pd.read_sql("""
-            SELECT u.player_id, u.role, u.purchase_price, u.rationale, u.updated_at,
-                   m.web_name as name, m.position, m.now_cost/10.0 as cost, m.chance_of_playing, m.news, t.name as team
-            FROM user_active_squad u
-            LEFT JOIN players_meta m ON u.player_id = m.id
-            LEFT JOIN teams t ON m.team_id = t.id
-        """, conn)
-        account_df = pd.read_sql("SELECT * FROM user_account_state", conn)
-        
-        bank = 0.0
-        fts = 1
-        if not account_df.empty:
-            bank_row = account_df[account_df["key"] == "bank"]
-            if not bank_row.empty: bank = float(bank_row.iloc[0]["value"])
-            fts_row = account_df[account_df["key"] == "free_transfers"]
-            if not fts_row.empty: fts = int(fts_row.iloc[0]["value"])
-
-        if squad_df.empty:
-            # Fallback to load Manager 2667805 squad (100.0m full budget)
-            mgr_df = load_manager_2667805_squad()
-            if not mgr_df.empty:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='players_meta'")
+            if not cur.fetchone():
+                mgr_df = load_manager_2667805_squad()
                 mgr_df["purchase_price"] = mgr_df["cost"]
                 mgr_df["selling_price"] = mgr_df["cost"]
                 return mgr_df, 0.0, 1
-        else:
-            squad_df["purchase_price"] = squad_df["purchase_price"].fillna(squad_df["cost"])
-            squad_df["selling_price"] = [
-                calculate_selling_price(p_buy, p_curr)
-                for p_buy, p_curr in zip(squad_df["purchase_price"], squad_df["cost"])
-            ]
-        return squad_df, bank, fts
-    finally:
-        conn.close()
+
+            squad_df = pd.read_sql("""
+                SELECT u.player_id, u.role, u.purchase_price, u.rationale, u.updated_at,
+                       m.web_name as name, m.position, m.now_cost/10.0 as cost, m.chance_of_playing, m.news, t.name as team
+                FROM user_active_squad u
+                LEFT JOIN players_meta m ON u.player_id = m.id
+                LEFT JOIN teams t ON m.team_id = t.id
+            """, conn)
+            account_df = pd.read_sql("SELECT * FROM user_account_state", conn)
+            
+            bank = 0.0
+            fts = 1
+            if not account_df.empty:
+                bank_row = account_df[account_df["key"] == "bank"]
+                if not bank_row.empty: bank = float(bank_row.iloc[0]["value"])
+                fts_row = account_df[account_df["key"] == "free_transfers"]
+                if not fts_row.empty: fts = int(fts_row.iloc[0]["value"])
+
+            if squad_df.empty:
+                # Fallback to load Manager 2667805 squad (100.0m full budget)
+                mgr_df = load_manager_2667805_squad()
+                if not mgr_df.empty:
+                    mgr_df["purchase_price"] = mgr_df["cost"]
+                    mgr_df["selling_price"] = mgr_df["cost"]
+                    return mgr_df, 0.0, 1
+            else:
+                squad_df["purchase_price"] = squad_df["purchase_price"].fillna(squad_df["cost"])
+                squad_df["selling_price"] = [
+                    calculate_selling_price(p_buy, p_curr)
+                    for p_buy, p_curr in zip(squad_df["purchase_price"], squad_df["cost"])
+                ]
+            return squad_df, bank, fts
+        finally:
+            conn.close()
+    except Exception:
+        mgr_df = load_manager_2667805_squad()
+        if not mgr_df.empty:
+            mgr_df["purchase_price"] = mgr_df["cost"]
+            mgr_df["selling_price"] = mgr_df["cost"]
+        return mgr_df, 0.0, 1
 
 def build_gw1_start_of_season_squad(history_df, budget=100.0, formation=None, locked_player_ids=None, max_unspent_bank=0.0, risk_aversion=0.0):
     """
