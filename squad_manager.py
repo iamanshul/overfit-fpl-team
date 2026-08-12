@@ -296,25 +296,19 @@ def build_gw1_start_of_season_squad(history_df, budget=100.0, formation=None, lo
         candidate_set.update(locked_player_ids)
 
     candidates = list(candidate_set)
-    # Strictly force spending at least 99.5m (up to 100.0m) to prevent dead bank leakage
     min_cost = max(budget - max_unspent_bank, budget - 0.5)
 
-    # Initial dummy squad for budget reference
-    dummy_squad = matrix.sort_values("xP_horizon_sum", ascending=False)["player_id"].head(15).tolist()
-    dummy_cost = float(matrix[matrix["player_id"].isin(dummy_squad)]["cost"].sum())
-    init_bank = float(max(0.0, budget - dummy_cost))
-
-    plan = optimizer.solve_rolling_horizon(
-        dummy_squad,
-        initial_bank=init_bank,
-        initial_fts=1,
-        active_chip="wildcard",
-        formation=formation,
-        locked_player_ids=locked_player_ids,
-        min_squad_cost=min_cost,
-        max_budget=budget,
-        risk_aversion=risk_aversion
-    )
+    try:
+        plan = optimizer.solve_start_of_season_squad(
+            budget=budget,
+            formation=formation,
+            locked_player_ids=locked_player_ids,
+            min_squad_cost=min_cost,
+            risk_aversion=risk_aversion
+        )
+    except Exception as e:
+        print(f"Solver error: {e}")
+        plan = {"status": "Error"}
 
     if plan.get("status") == "Optimal":
         squad_ids = plan["squad_ids"]

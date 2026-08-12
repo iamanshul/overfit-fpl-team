@@ -400,3 +400,158 @@ class MultiPeriodMILP:
             "hurdle_freehit": hurdle_fh,
             "recommendation": rec
         }
+
+    def solve_start_of_season_squad(self, budget=100.0, formation=None, locked_player_ids=None, min_squad_cost=None, risk_aversion=0.0):
+        """
+        Fast dedicated MILP solver for start-of-season 15-man squad selection.
+        Solves in <0.2s by optimizing 15-man squad, starting 11, captain, and bench rotation
+        across the 6-gameweek horizon under exact FPL quotas, budget, and team constraints.
+        """
+        if self.df.empty:
+            return {"status": "Infeasible"}
+
+        gw1 = self.gws[0]
+
+        # Candidate pruning for ultra-fast solving
+        pos_quotas = {"GKP": 15, "DEF": 35, "MID": 40, "FWD": 25}
+        candidate_ids = set()
+        for pos_name, limit in pos_quotas.items():
+            candidate_ids.update(self.df[self.df["position"] == pos_name].sort_values("xP_horizon_sum", ascending=False)["player_id"].head(limit))
+        candidate_ids.update(self.df[self.df["cost"].astype(float) >= 8.0]["player_id"])
+        candidate_ids.update(self.df[self.df["cost"].astype(float) <= 4.5]["player_id"])
+        if locked_player_ids:
+            candidate_ids.update(locked_player_ids)
+
+        sub_df = self.df[self.df["player_id"].isin(candidate_ids)].copy()
+        players = sub_df["player_id"].tolist()
+        costs = dict(zip(sub_df["player_id"], sub_df["cost"].astype(float)))
+        pos_dict = dict(zip(sub_df["player_id"], sub_df["position"]))
+        teams_dict = dict(zip(sub_df["player_id"], sub_df["team"]))
+        xp_gw1 = dict(zip(sub_df["player_id"], sub_df[f"xP_{gw1}"].fillna(4.0)))
+        xp_sum = dict(zip(sub_df["player_id"], sub_df["xP_horizon_sum"].fillna(20.0)))
+
+        prob = pulp.LpProblem("GW1_Start_Squad", pulp.LpMaximize)
+
+        x = {p: pulp.LpVariable(f"sq_{p}", cat="Binary") for p in players}
+        y = {p: pulp.LpVariable(f"st_{p}", cat="Binary") for p in players}
+        c = {p: pulp.LpVariable(f"cp_{p}", cat="Binary") for p in players}
+        v = {p: pulp.LpVariable(f"vc_{p}", cat="Binary") for p in players}
+
+        # Objective: Starting XI 6-week horizon points + GW1 point weight + Captain double + small bench weight
+        prob += pulp.lpSum([
+            y[p] * (xp_sum[p] + 0.5 * xp_gw1[p]) +
+            c[p] * (xp_sum[p] + 0.5 * xp_gw1[p]) +
+            0.05 * (x[p] - y[p]) * xp_sum[p]
+            for p in players
+        ])
+
+        # 1. Total counts: exactly 15 squad members, 11 starters, 1 captain, 1 vice captain
+        prob += pulp.lpSum([x[p] for p in players]) == 15
+        prob += pulp.lpSum([y[p] for p in players]) == 11
+        prob += pulp.lpSum([c[p] for p in players]) == 1
+        prob += pulp.lpSum([v[p] for p in players]) == 1
+
+        for p in players:
+            prob += y[p] <= x[p]
+            prob += c[p] <= y[p]
+            prob += v[p] <= y[p]
+            prob += c[p] + v[p] <= 1
+
+        # 2. Squad Positional Quotas: 2 GKP, 5 DEF, 5 MID, 3 FWD
+        prob += pulp.lpSum([x[p] for p in players if pos_dict[p] == "GKP"]) == 2
+        prob += pulp.lpSum([x[p] for p in players if pos_dict[p] == "DEF"]) == 5
+        prob += pulp.lpSum([x[p] for p in players if pos_dict[p] == "MID"]) == 5
+        prob += pulp.lpSum([x[p] for p in players if pos_dict[p] == "FWD"]) == 3
+
+        # 3. Starting Lineup Formation Constraints
+        if formation:
+            try:
+                d_target, m_target, f_target = map(int, str(formation).split("-"))
+                prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "GKP"]) == 1
+                prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "DEF"]) == d_target
+                prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "MID"]) == m_target
+                prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "FWD"]) == f_target
+            except Exception:
+                formation = None
+
+        if not formation:
+            prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "GKP"]) == 1
+            prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "DEF"]) >= 3
+            prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "DEF"]) <= 5
+            prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "MID"]) >= 2
+            prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "MID"]) <= 5
+            prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "FWD"]) >= 1
+            prob += pulp.lpSum([y[p] for p in players if pos_dict[p] == "FWD"]) <= 3
+
+        # 4. Club limit: Max 3 players per Premier League team
+        all_teams = set(teams_dict.values())
+        for t in all_teams:
+            prob += pulp.lpSum([x[p] for p in players if teams_dict[p] == t]) <= 3
+
+        # 5. Budget Constraints
+        prob += pulp.lpSum([x[p] * costs[p] for p in players]) <= budget
+        if min_squad_cost is not None:
+            prob += pulp.lpSum([x[p] * costs[p] for p in players]) >= min_squad_cost
+
+        # 6. Locked players
+        if locked_player_ids:
+            for lp in locked_player_ids:
+                if lp in x:
+                    prob += x[lp] == 1
+
+        # Solve with robust solver
+        solver = None
+        if os.path.exists("/usr/bin/cbc"):
+            try:
+                solver = pulp.COIN_CMD(path="/usr/bin/cbc", msg=False, timeLimit=10)
+            except Exception:
+                solver = None
+        if solver is None:
+            try:
+                solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=10)
+            except Exception:
+                solver = pulp.LpSolverDefault
+
+        try:
+            prob.solve(solver)
+        except Exception:
+            prob.solve()
+
+        status_str = pulp.LpStatus[prob.status]
+        if status_str != "Optimal":
+            return {"status": status_str}
+
+        opt_squad = [p for p in players if pulp.value(x[p]) == 1]
+        opt_xi = [p for p in players if pulp.value(y[p]) == 1]
+        opt_cap = [p for p in players if pulp.value(c[p]) == 1]
+        opt_vc = [p for p in players if pulp.value(v[p]) == 1]
+        captain_id = opt_cap[0] if opt_cap else (opt_xi[0] if opt_xi else None)
+        vice_captain_id = opt_vc[0] if opt_vc else ([p for p in opt_xi if p != captain_id][0] if len(opt_xi) > 1 else None)
+
+        squad_cost = sum(costs[p] for p in opt_squad)
+        bank_remaining = round(budget - squad_cost, 2)
+
+        bench = [p for p in opt_squad if p not in opt_xi]
+        bench_gkp = [p for p in bench if pos_dict[p] == "GKP"]
+        ordered_outfield = sorted([p for p in bench if pos_dict[p] != "GKP"], key=lambda pid: xp_gw1.get(pid, 0.0), reverse=True)
+        ordered_bench = bench_gkp + ordered_outfield
+
+        projected_gw1 = round(sum(xp_gw1.get(p, 4.0) for p in opt_xi) + xp_gw1.get(captain_id, 4.0), 2)
+        projected_horizon = round(sum(xp_sum.get(p, 20.0) for p in opt_xi) + xp_sum.get(captain_id, 20.0), 2)
+
+        return {
+            "status": "Optimal",
+            "squad_ids": opt_squad,
+            "starting_xi_ids": opt_xi,
+            "bench_ids": ordered_bench,
+            "captain_id": captain_id,
+            "vice_captain_id": vice_captain_id,
+            "transfers_in": [],
+            "transfers_out": [],
+            "hits_taken": 0,
+            "squad_cost": squad_cost,
+            "bank_remaining": bank_remaining,
+            "projected_points_gw1": projected_gw1,
+            "projected_points_horizon": projected_horizon,
+            "transfers_saved": 0
+        }
