@@ -32,20 +32,31 @@ class CanonicalRateEngine:
         if df.empty:
             return
 
+        if "name" not in df.columns and "player_name" in df.columns:
+            df["name"] = df["player_name"]
+        if "team" not in df.columns and "team_name" in df.columns:
+            df["team"] = df["team_name"]
+        if "gameweek" not in df.columns and "round" in df.columns:
+            df["gameweek"] = df["round"]
+        if "player_id" not in df.columns and "element_id" in df.columns:
+            df["player_id"] = df["element_id"]
+
         df = df.sort_values(["player_id", "gameweek"])
         grouped = df.groupby("player_id")
 
         rates = pd.DataFrame()
-        rates["name"] = grouped["name"].last()
+        rates["name"] = grouped["name"].last() if "name" in df.columns else grouped["player_name"].last()
         rates["position"] = grouped["position"].last()
-        rates["team"] = grouped["team"].last()
+        rates["team"] = grouped["team"].last() if "team" in df.columns else grouped["team_name"].last()
         if "now_cost" in df.columns:
             rates["cost"] = grouped["now_cost"].last().astype(float) / 10.0
         elif "cost" in df.columns:
             raw_c = grouped["cost"].last().astype(float)
             rates["cost"] = np.where(raw_c > 20.0, raw_c / 10.0, raw_c)
-        else:
+        elif "value" in df.columns:
             rates["cost"] = grouped["value"].last().astype(float) / 10.0
+        else:
+            rates["cost"] = 5.0
 
         # Preserve metadata fields & classify availability categories
         if "chance_of_playing" in df.columns:
@@ -230,30 +241,36 @@ class CanonicalRateEngine:
 
     def _get_fixtures_map(self, gw):
         """Retrieves dict mapping team_name -> list of fixture dicts for gameweek gw."""
-        from data_loader import get_db_connection
-        conn = get_db_connection()
         try:
-            df = pd.read_sql("""
-                SELECT f.event, f.team_h, f.team_a, th.name as team_h_name, ta.name as team_a_name
-                FROM fixtures f
-                LEFT JOIN teams th ON f.team_h = th.id
-                LEFT JOIN teams ta ON f.team_a = ta.id
-                WHERE f.event = ?
-            """, conn, params=(gw,))
-            
-            fix_map = {}
-            for _, row in df.iterrows():
-                h_name = row['team_h_name']
-                a_name = row['team_a_name']
-                if h_name:
-                    fix_map.setdefault(h_name, []).append({'opp': a_name, 'was_home': True})
-                if a_name:
-                    fix_map.setdefault(a_name, []).append({'opp': h_name, 'was_home': False})
-            return fix_map
+            from data_loader import get_db_connection, DB_PATH
+            import os
+            if not os.path.exists(DB_PATH):
+                return {}
+            conn = get_db_connection()
+            try:
+                df = pd.read_sql("""
+                    SELECT f.event, f.team_h, f.team_a, th.name as team_h_name, ta.name as team_a_name
+                    FROM fixtures f
+                    LEFT JOIN teams th ON f.team_h = th.id
+                    LEFT JOIN teams ta ON f.team_a = ta.id
+                    WHERE f.event = ?
+                """, conn, params=(gw,))
+                
+                fix_map = {}
+                for _, row in df.iterrows():
+                    h_name = row['team_h_name']
+                    a_name = row['team_a_name']
+                    if h_name:
+                        fix_map.setdefault(h_name, []).append({'opp': a_name, 'was_home': True})
+                    if a_name:
+                        fix_map.setdefault(a_name, []).append({'opp': h_name, 'was_home': False})
+                return fix_map
+            except Exception:
+                return {}
+            finally:
+                conn.close()
         except Exception:
             return {}
-        finally:
-            conn.close()
 
     def generate_horizon_matrix(self, start_gw, horizon_weeks=ROLLING_HORIZON_WEEKS, elo_dict=None, sharp_odds_df=None, use_dixon_coles=True):
         """Generates expected points matrix (xP) across rolling horizon with schedule awareness & Dixon-Coles Poisson engine."""

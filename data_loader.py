@@ -435,12 +435,23 @@ def load_player_history():
     if os.path.exists(CSV_PATH):
         try:
             df_csv = pd.read_csv(CSV_PATH)
+            if 'player_name' in df_csv.columns and 'name' not in df_csv.columns:
+                df_csv['name'] = df_csv['player_name']
+            if 'team_name' in df_csv.columns and 'team' not in df_csv.columns:
+                df_csv['team'] = df_csv['team_name']
             if 'round' in df_csv.columns and 'gameweek' not in df_csv.columns:
                 df_csv['gameweek'] = df_csv['round']
             if 'element_id' in df_csv.columns and 'player_id' not in df_csv.columns:
                 df_csv['player_id'] = df_csv['element_id']
-            if 'now_cost' in df_csv.columns and 'cost' not in df_csv.columns:
-                df_csv['cost'] = df_csv['now_cost'] / 10.0
+            if 'player_id' in df_csv.columns and 'element_id' not in df_csv.columns:
+                df_csv['element_id'] = df_csv['player_id']
+            if 'cost' not in df_csv.columns:
+                if 'now_cost' in df_csv.columns:
+                    df_csv['cost'] = df_csv['now_cost'] / 10.0
+                elif 'value' in df_csv.columns:
+                    df_csv['cost'] = df_csv['value'] / 10.0
+                else:
+                    df_csv['cost'] = 5.0
             return df_csv
         except Exception as e:
             print(f"⚠️ Error reading CSV player history: {e}")
