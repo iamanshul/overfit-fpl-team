@@ -395,38 +395,57 @@ def fetch_clubelo_ratings(target_date=None):
     return default_elo
 
 def load_player_history():
-    """Loads historical player match dataset from SQLite DB or CSV."""
+    """Loads historical player match dataset from SQLite DB or CSV fallback."""
     if os.path.exists(DB_PATH):
         conn = get_db_connection()
         try:
-            df = pd.read_sql("SELECT * FROM player_match_history", conn)
-            if not df.empty:
-                meta = pd.read_sql("""
-                    SELECT m.id as element_id, m.web_name as name, m.position, m.now_cost, m.status, m.news, m.chance_of_playing,
-                           m.selected_by_percent, m.transfers_in_event, m.transfers_out_event,
-                           m.penalties_order, m.direct_freekicks_order, m.corners_and_indirect_freekicks_order,
-                           m.has_midweek_uefa, m.age, m.height_cm, t.name as team
-                    FROM players_meta m
-                    LEFT JOIN teams t ON m.team_id = t.id
-                """, conn)
-                teams_opp = pd.read_sql("SELECT id as opponent_team_id, name as opponent_team_name FROM teams", conn)
-                
-                # Drop stale team/name/cost columns from history prior to merge so live meta takes priority
-                cols_to_drop = [c for c in ['team', 'team_name', 'name', 'position', 'cost', 'now_cost', 'status', 'news', 'chance_of_playing', 'age', 'height_cm'] if c in df.columns]
-                df = df.drop(columns=cols_to_drop)
-                
-                df = df.merge(meta, on='element_id', how='left')
-                df = df.merge(teams_opp, left_on='opponent_team', right_on='opponent_team_id', how='left')
-                if 'opponent_team_id' in df.columns:
-                    df = df.drop(columns=['opponent_team_id'])
-                df['player_id'] = df['element_id']
-                df['gameweek'] = df['round']
-                df['cost'] = df['now_cost'] / 10.0
-                return df
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='player_match_history'")
+            if cur.fetchone():
+                df = pd.read_sql("SELECT * FROM player_match_history", conn)
+                if not df.empty:
+                    meta = pd.read_sql("""
+                        SELECT m.id as element_id, m.web_name as name, m.position, m.now_cost, m.status, m.news, m.chance_of_playing,
+                               m.selected_by_percent, m.transfers_in_event, m.transfers_out_event,
+                               m.penalties_order, m.direct_freekicks_order, m.corners_and_indirect_freekicks_order,
+                               m.has_midweek_uefa, m.age, m.height_cm, t.name as team
+                        FROM players_meta m
+                        LEFT JOIN teams t ON m.team_id = t.id
+                    """, conn)
+                    teams_opp = pd.read_sql("SELECT id as opponent_team_id, name as opponent_team_name FROM teams", conn)
+                    
+                    # Drop stale team/name/cost columns from history prior to merge so live meta takes priority
+                    cols_to_drop = [c for c in ['team', 'team_name', 'name', 'position', 'cost', 'now_cost', 'status', 'news', 'chance_of_playing', 'age', 'height_cm'] if c in df.columns]
+                    df = df.drop(columns=cols_to_drop)
+                    
+                    df = df.merge(meta, on='element_id', how='left')
+                    df = df.merge(teams_opp, left_on='opponent_team', right_on='opponent_team_id', how='left')
+                    if 'opponent_team_id' in df.columns:
+                        df = df.drop(columns=['opponent_team_id'])
+                    df['player_id'] = df['element_id']
+                    df['gameweek'] = df['round']
+                    df['cost'] = df['now_cost'] / 10.0
+                    return df
         except Exception as e:
             print(f"⚠️ Error reading DB player history: {e}")
         finally:
             conn.close()
+
+    # Guaranteed fallback to packaged CSV dataset
+    if os.path.exists(CSV_PATH):
+        try:
+            df_csv = pd.read_csv(CSV_PATH)
+            if 'round' in df_csv.columns and 'gameweek' not in df_csv.columns:
+                df_csv['gameweek'] = df_csv['round']
+            if 'element_id' in df_csv.columns and 'player_id' not in df_csv.columns:
+                df_csv['player_id'] = df_csv['element_id']
+            if 'now_cost' in df_csv.columns and 'cost' not in df_csv.columns:
+                df_csv['cost'] = df_csv['now_cost'] / 10.0
+            return df_csv
+        except Exception as e:
+            print(f"⚠️ Error reading CSV player history: {e}")
+
+    return pd.DataFrame()
 
 def fetch_live_sharp_odds(cache_ttl_days=2):
     """
