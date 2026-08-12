@@ -1,0 +1,12 @@
+venv/
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.DS_Store
+.coverage
+.vscode/
+.idea/
+tests/
+*.code-workspace
+data/*.db
