@@ -239,7 +239,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "📋 6-GW Squad Roadmap",
     "🃏 Chip Hurdle Evaluator",
     "📈 Walk-Forward Backtest",
-    "🎛️ What-If Scenario Studio"
+    "🔍 Player Scout & Option Comparison Studio"
 ])
 
 def render_player_card(row, fix_map=None):
@@ -862,38 +862,215 @@ with tab9:
             st.line_chart(res_df.set_index("gameweek")[["cumulative_points"]])
             st.dataframe(res_df, hide_index=True, use_container_width=True)
 
-# --- TAB 10: WHAT-IF SCENARIO STUDIO ---
+# --- TAB 10: PLAYER SCOUT & OPTION COMPARISON STUDIO ---
 with tab10:
-    st.header("🎛️ Interactive What-If Scenario Studio & Risk Optimization")
-    st.caption("Simulate custom rotation risks, adjust portfolio risk aversion, and solve customized MILP squads in real time.")
+    st.header("🔍 Player Scout & Direct Option Comparison Studio")
+    st.caption("Compare alternative player options head-to-head (e.g. Gabriel vs. Muñoz), evaluate score and budget trade-offs, and scout top assets with advanced multi-filters.")
 
-    sc1, sc2, sc3 = st.columns(3)
-    with sc1:
-        scenario_budget = st.number_input("Scenario Budget (£m)", min_value=90.0, max_value=105.0, value=100.0, step=0.5, key="sc_budget")
-    with sc2:
-        scenario_risk = st.slider("Double-Defense Risk Aversion (λ)", min_value=0.0, max_value=0.5, value=0.15, step=0.05, key="sc_risk")
-    with sc3:
-        scenario_fmt = st.selectbox("Target Formation", ["Automatic", "3-4-3", "3-5-2", "4-4-2", "4-3-3", "4-5-1", "5-3-2"], key="sc_fmt")
+    if not matrix.empty:
+        # Prepare matrix with display helpers
+        mat_scout = matrix.copy()
+        mat_scout["cost"] = mat_scout["cost"].fillna(5.0).astype(float)
+        mat_scout["GW1_xP"] = mat_scout[f"xP_{start_gw}"].fillna(4.0).astype(float)
+        mat_scout["Horizon_xP"] = mat_scout["xP_horizon_sum"].fillna(20.0).astype(float)
+        mat_scout["Value_Ratio"] = (mat_scout["Horizon_xP"] / mat_scout["cost"].clip(lower=1.0)).round(2)
+        mat_scout["CS_Pct"] = (mat_scout["team_cs_rate"] * 100).round(1).astype(str) + "%"
+        mat_scout["display_label"] = mat_scout.apply(
+            lambda r: f"{r['name']} ({r['position']}, {r['team']} - £{r['cost']:.1f}m | {r['GW1_xP']:.2f} xP)",
+            axis=1
+        )
 
-    st.markdown("---")
-    st.subheader("⚡ Execute Scenario Optimization")
-    if st.button("🚀 Solve Customized What-If Squad"):
-        with st.spinner("Building custom rate engine & solving MILP..."):
-            sc_squad, sc_bank = build_gw1_start_of_season_squad(
-                history_df,
-                budget=scenario_budget,
-                formation=scenario_fmt,
-                risk_aversion=scenario_risk
-            )
+        subtab1, subtab2, subtab3 = st.tabs([
+            "⚖️ Head-to-Head Option Comparison",
+            "🔎 Interactive Player Scout Table",
+            "🎛️ What-If Scenario Optimization"
+        ])
+
+        # --- SUBTAB 1: HEAD-TO-HEAD COMPARISON ---
+        with subtab1:
+            st.subheader("⚖️ Direct Player vs Player Score & Budget Impact")
+            st.caption("Select any two players to analyze the exact trade-off in projected points, budget savings, underlying stats, and upcoming fixtures.")
+
+            all_labels = mat_scout["display_label"].tolist()
             
-            if not sc_squad.empty:
-                sc_xp = sc_squad["GW1_xP"].fillna(0).sum()
-                m1, m2, m3 = st.columns(3)
-                with m1: st.metric("Total Projected GW1 xP", f"{sc_xp:.2f} pts")
-                with m2: st.metric("Remaining Bank", f"£{sc_bank:.1f}m")
-                with m3: st.metric("Double-Defense Stacking Penalty", f"λ = {scenario_risk:.2f}")
+            # Default to Gabriel vs Munoz if available
+            def_idx_a = next((i for i, s in enumerate(all_labels) if "Gabriel" in s and "Arsenal" in s), 0)
+            def_idx_b = next((i for i, s in enumerate(all_labels) if ("Muñoz" in s or "Munoz" in s) and "Palace" in s), min(1, len(all_labels)-1))
 
-                st.markdown("---")
-                st.subheader("📋 Scenario Squad Cards & Rationales")
-                for _, p_row in sc_squad.iterrows():
-                    render_player_card(p_row)
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                p_label_a = st.selectbox("🅰️ Select Player A (e.g. Recommended Option)", all_labels, index=def_idx_a, key="h2h_p1")
+            with col_p2:
+                p_label_b = st.selectbox("🅱️ Select Player B (e.g. Alternative Option)", all_labels, index=def_idx_b, key="h2h_p2")
+
+            row_a = mat_scout[mat_scout["display_label"] == p_label_a].iloc[0]
+            row_b = mat_scout[mat_scout["display_label"] == p_label_b].iloc[0]
+
+            cost_a, cost_b = float(row_a["cost"]), float(row_b["cost"])
+            xp1_a, xp1_b = float(row_a["GW1_xP"]), float(row_b["GW1_xP"])
+            xph_a, xph_b = float(row_a["Horizon_xP"]), float(row_b["Horizon_xP"])
+            val_a, val_b = float(row_a["Value_Ratio"]), float(row_b["Value_Ratio"])
+
+            d_cost = cost_b - cost_a
+            d_xp1 = xp1_b - xp1_a
+            d_xph = xph_b - xph_a
+            d_val = val_b - val_a
+
+            # 4 KPI Cards for Trade-Off Impact
+            st.markdown("#### 📊 Score & Budget Delta (Player B vs Player A)")
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                cost_str = f"£{d_cost:+.1f}m"
+                cost_desc = f"Saves £{abs(d_cost):.1f}m" if d_cost < 0 else (f"Costs extra £{d_cost:.1f}m" if d_cost > 0 else "Same Cost")
+                st.metric("Budget Impact", cost_str, delta=cost_desc, delta_color="inverse")
+            with k2:
+                st.metric(f"GW{start_gw} Score Impact", f"{d_xp1:+.2f} pts", delta=f"{xp1_b:.2f} vs {xp1_a:.2f} xP")
+            with k3:
+                st.metric("6-GW Total Score Impact", f"{d_xph:+.2f} pts", delta=f"{xph_b:.2f} vs {xph_a:.2f} xP")
+            with k4:
+                st.metric("Value Efficiency (xP/£m)", f"{d_val:+.2f} pts/£", delta=f"{val_b:.2f} vs {val_a:.2f}")
+
+            st.markdown("---")
+            # Side-by-Side Player Cards & Upcoming Fixtures
+            card_col1, card_col2 = st.columns(2)
+            with card_col1:
+                st.markdown(f"### 🅰️ **{row_a['name']}** ({row_a['team']})")
+                render_player_card(row_a)
+            with card_col2:
+                st.markdown(f"### 🅱️ **{row_b['name']}** ({row_b['team']})")
+                render_player_card(row_b)
+
+            st.markdown("---")
+            # Detailed Side-by-Side Stat Breakdown Table
+            st.subheader("📋 Detailed Statistical Breakdown")
+            comp_table_data = [
+                {"Metric": "Position", row_a["name"]: row_a["position"], row_b["name"]: row_b["position"], "Advantage": "Same" if row_a["position"] == row_b["position"] else f"{row_b['position']} vs {row_a['position']}"},
+                {"Metric": "Club Team", row_a["name"]: row_a["team"], row_b["name"]: row_b["team"], "Advantage": "—"},
+                {"Metric": "Cost (£m)", row_a["name"]: f"£{cost_a:.1f}m", row_b["name"]: f"£{cost_b:.1f}m", "Advantage": f"🅱️ Cheaper by £{abs(d_cost):.1f}m" if d_cost < 0 else (f"🅰️ Cheaper by £{d_cost:.1f}m" if d_cost > 0 else "Equal")},
+                {"Metric": f"GW{start_gw} Expected Points (xP)", row_a["name"]: f"{xp1_a:.2f} pts", row_b["name"]: f"{xp1_b:.2f} pts", "Advantage": f"🅱️ +{d_xp1:.2f} pts" if d_xp1 > 0 else f"🅰️ +{abs(d_xp1):.2f} pts"},
+                {"Metric": "6-GW Total Expected Points", row_a["name"]: f"{xph_a:.2f} pts", row_b["name"]: f"{xph_b:.2f} pts", "Advantage": f"🅱️ +{d_xph:.2f} pts" if d_xph > 0 else f"🅰️ +{abs(d_xph):.2f} pts"},
+                {"Metric": "Value for Money (xP / £m)", row_a["name"]: f"{val_a:.2f}", row_b["name"]: f"{val_b:.2f}", "Advantage": f"🅱️ +{d_val:.2f} pts/£" if d_val > 0 else f"🅰️ +{abs(d_val):.2f} pts/£"},
+                {"Metric": "Clean Sheet Rate", row_a["name"]: f"{float(row_a.get('team_cs_rate', 0.3))*100:.1f}%", row_b["name"]: f"{float(row_b.get('team_cs_rate', 0.3))*100:.1f}%", "Advantage": "🅱️ Higher" if float(row_b.get('team_cs_rate', 0.3)) > float(row_a.get('team_cs_rate', 0.3)) else "🅰️ Higher"},
+                {"Metric": "Goal Threat (r_goal / 90)", row_a["name"]: f"{float(row_a.get('r_goal', 0.0)):.3f}", row_b["name"]: f"{float(row_b.get('r_goal', 0.0)):.3f}", "Advantage": "🅱️ Higher" if float(row_b.get('r_goal', 0.0)) > float(row_a.get('r_goal', 0.0)) else "🅰️ Higher"},
+                {"Metric": "Assist Threat (r_assist / 90)", row_a["name"]: f"{float(row_a.get('r_assist', 0.0)):.3f}", row_b["name"]: f"{float(row_b.get('r_assist', 0.0)):.3f}", "Advantage": "🅱️ Higher" if float(row_b.get('r_assist', 0.0)) > float(row_a.get('r_assist', 0.0)) else "🅰️ Higher"},
+                {"Metric": "Expected Minutes (xM)", row_a["name"]: f"{float(row_a.get('xM', 75.0)):.0f} mins", row_b["name"]: f"{float(row_b.get('xM', 75.0)):.0f} mins", "Advantage": "Equal" if float(row_a.get('xM', 75.0)) == float(row_b.get('xM', 75.0)) else ("🅱️ Higher" if float(row_b.get('xM', 75.0)) > float(row_a.get('xM', 75.0)) else "🅰️ Higher")},
+                {"Metric": "Availability / Status", row_a["name"]: f"{int(row_a.get('chance_of_playing', 100))}% ({row_a.get('news', 'Fit') or 'Fit'})", row_b["name"]: f"{int(row_b.get('chance_of_playing', 100))}% ({row_b.get('news', 'Fit') or 'Fit'})", "Advantage": "—"}
+            ]
+            st.dataframe(pd.DataFrame(comp_table_data), hide_index=True, use_container_width=True)
+
+            # Quantitative AI Verdict Box
+            if d_cost < 0 and d_xp1 >= 0:
+                verdict_msg = f"💡 **Dominant Value Swap**: Choosing **{row_b['name']}** over **{row_a['name']}** saves **£{abs(d_cost):.1f}m** while gaining **+{d_xp1:.2f} GW{start_gw} xP**! Highly recommended if you need funds to upgrade another slot."
+            elif d_cost < 0 and d_xp1 < 0:
+                cost_per_pt = abs(d_cost) / max(abs(d_xp1), 0.01)
+                verdict_msg = f"💡 **Budget Downgrade Trade-Off**: Choosing **{row_b['name']}** frees up **£{abs(d_cost):.1f}m** at the cost of **{d_xp1:.2f} GW{start_gw} xP** (yielding £{cost_per_pt:.2f}m freed per point conceded)."
+            elif d_cost > 0 and d_xp1 > 0:
+                verdict_msg = f"💡 **Premium Upgrade**: Upgrading from **{row_a['name']}** to **{row_b['name']}** costs **£{d_cost:.1f}m** for an expected gain of **+{d_xp1:.2f} GW{start_gw} xP**."
+            else:
+                verdict_msg = f"💡 **Head-to-Head Comparison**: **{row_a['name']}** projects {xp1_a:.2f} xP (£{cost_a:.1f}m) vs **{row_b['name']}** with {xp1_b:.2f} xP (£{cost_b:.1f}m)."
+            st.success(verdict_msg)
+
+        # --- SUBTAB 2: INTERACTIVE PLAYER SCOUT TABLE ---
+        with subtab2:
+            st.subheader("🔎 Interactive Player Scout & Multi-Filter Engine")
+            st.caption("Search, filter, and sort every player across the Premier League by expected points, price tier, club, and underlying metrics.")
+
+            f_c1, f_c2, f_c3, f_c4 = st.columns(4)
+            with f_c1:
+                search_query = st.text_input("🔍 Search Name", "", key="scout_search", placeholder="e.g. Gabriel, Munoz, Salah...")
+            with f_c2:
+                pos_choice = st.selectbox("Position", ["All Positions", "GKP", "DEF", "MID", "FWD"], key="scout_pos")
+            with f_c3:
+                teams_list = ["All Teams"] + sorted(list(mat_scout["team"].dropna().unique()))
+                team_choice = st.selectbox("Club Team", teams_list, key="scout_team")
+            with f_c4:
+                max_price = st.slider("Max Cost (£m)", min_value=4.0, max_value=15.0, value=15.0, step=0.5, key="scout_price")
+
+            f_s1, f_s2 = st.columns(2)
+            with f_s1:
+                sort_choice = st.selectbox("Sort Table By", [
+                    f"GW{start_gw} Projected xP (Highest first)",
+                    "6-GW Horizon xP (Highest first)",
+                    "Value Ratio (xP per £m)",
+                    "Clean Sheet % (Highest first)",
+                    "Goal Threat r_goal (Highest first)",
+                    "Cost (Lowest first)",
+                    "Cost (Highest first)"
+                ], key="scout_sort")
+            with f_s2:
+                fit_only = st.checkbox("Only show fully fit players (100% chance)", value=True, key="scout_fit")
+
+            filtered_mat = mat_scout.copy()
+            if search_query:
+                filtered_mat = filtered_mat[filtered_mat["name"].str.contains(search_query.strip(), case=False, na=False)]
+            if pos_choice != "All Positions":
+                filtered_mat = filtered_mat[filtered_mat["position"] == pos_choice]
+            if team_choice != "All Teams":
+                filtered_mat = filtered_mat[filtered_mat["team"] == team_choice]
+            filtered_mat = filtered_mat[filtered_mat["cost"] <= max_price]
+            if fit_only:
+                filtered_mat = filtered_mat[filtered_mat["chance_of_playing"] >= 100]
+
+            if "GW" in sort_choice and "Projected" in sort_choice:
+                filtered_mat = filtered_mat.sort_values("GW1_xP", ascending=False)
+            elif "6-GW" in sort_choice:
+                filtered_mat = filtered_mat.sort_values("Horizon_xP", ascending=False)
+            elif "Value" in sort_choice:
+                filtered_mat = filtered_mat.sort_values("Value_Ratio", ascending=False)
+            elif "Clean Sheet" in sort_choice:
+                filtered_mat = filtered_mat.sort_values("team_cs_rate", ascending=False)
+            elif "Goal Threat" in sort_choice:
+                filtered_mat = filtered_mat.sort_values("r_goal", ascending=False)
+            elif "Lowest" in sort_choice:
+                filtered_mat = filtered_mat.sort_values("cost", ascending=True)
+            elif "Highest" in sort_choice:
+                filtered_mat = filtered_mat.sort_values("cost", ascending=False)
+
+            display_scout_cols = ["name", "position", "team", "cost", "GW1_xP", "Horizon_xP", "Value_Ratio", "CS_Pct", "r_goal", "r_assist", "xM", "news"]
+            rename_scout_dict = {
+                "name": "Player Name", "position": "Pos", "team": "Team", "cost": "Cost (£m)",
+                "GW1_xP": f"GW{start_gw} xP", "Horizon_xP": "6-GW xP", "Value_Ratio": "xP / £m",
+                "CS_Pct": "Clean Sheet %", "r_goal": "rGoal/90", "r_assist": "rAssist/90", "xM": "xMins", "news": "News / Availability"
+            }
+
+            st.write(f"Showing **{len(filtered_mat)}** matching players:")
+            st.dataframe(
+                filtered_mat[display_scout_cols].rename(columns=rename_scout_dict),
+                hide_index=True,
+                use_container_width=True
+            )
+
+        # --- SUBTAB 3: WHAT-IF SCENARIO OPTIMIZATION ---
+        with subtab3:
+            st.subheader("🎛️ Interactive What-If Scenario Studio & Risk Optimization")
+            st.caption("Simulate custom budget allocations, double-defense variance penalties, and solve customized MILP squads in real time.")
+
+            sc1, sc2, sc3 = st.columns(3)
+            with sc1:
+                scenario_budget = st.number_input("Scenario Budget (£m)", min_value=90.0, max_value=105.0, value=100.0, step=0.5, key="sc_budget")
+            with sc2:
+                scenario_risk = st.slider("Double-Defense Risk Aversion (λ)", min_value=0.0, max_value=0.5, value=0.15, step=0.05, key="sc_risk")
+            with sc3:
+                scenario_fmt = st.selectbox("Target Formation", ["Automatic", "3-4-3", "3-5-2", "4-4-2", "4-3-3", "4-5-1", "5-3-2"], key="sc_fmt")
+
+            st.markdown("---")
+            if st.button("🚀 Solve Customized What-If Squad"):
+                with st.spinner("Building custom rate engine & solving MILP..."):
+                    sc_squad, sc_bank = build_gw1_start_of_season_squad(
+                        history_df,
+                        budget=scenario_budget,
+                        formation=scenario_fmt,
+                        risk_aversion=scenario_risk
+                    )
+                    
+                    if not sc_squad.empty:
+                        sc_xp = sc_squad["GW1_xP"].fillna(0).sum()
+                        m1, m2, m3 = st.columns(3)
+                        with m1: st.metric("Total Projected GW1 xP", f"{sc_xp:.2f} pts")
+                        with m2: st.metric("Remaining Bank", f"£{sc_bank:.1f}m")
+                        with m3: st.metric("Double-Defense Stacking Penalty", f"λ = {scenario_risk:.2f}")
+
+                        st.markdown("---")
+                        st.subheader("📋 Scenario Squad Cards & Rationales")
+                        for _, p_row in sc_squad.iterrows():
+                            render_player_card(p_row)
