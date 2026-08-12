@@ -8,6 +8,7 @@ article counter-argument engine, ClubElo visualizer, and 380-game schedule brows
 
 import os
 import sys
+import textwrap
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -277,7 +278,7 @@ def render_player_card(row, fix_map=None):
                 pills.append(f'<span style="background-color:{f["bg"]}; color:{f["fg"]}; padding:2px 6px; border-radius:4px; font-size:0.75em; font-weight:bold; margin-right:3px;">{f["text"]}</span>')
             fix_html = f'<div style="margin-top:4px; display:flex; align-items:center;"><span style="font-size:0.78em; color:#8b949e; margin-right:5px; font-weight:600;">Next 3:</span>{"".join(pills)}</div>'
 
-    st.markdown(f"""
+    card_html = textwrap.dedent(f"""
     <div class="{card_cls}">
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <div><strong>{row.get('name', 'Player')}</strong> {flag_html}</div>
@@ -289,7 +290,8 @@ def render_player_card(row, fix_map=None):
         {fix_html}
         <div class="rationale-text">"{row.get('rationale', 'Selected based on baseline xP.')}"</div>
     </div>
-    """, unsafe_allow_html=True)
+    """).strip()
+    st.markdown(card_html, unsafe_allow_html=True)
 
 # --- TAB 1: MY SQUAD & TRANSFER STUDIO ---
 with tab1:
@@ -648,13 +650,14 @@ with tab4:
                     v_type = row["verdict"]
                     box_class = "verdict-supported" if "SUPPORTED" in v_type else ("verdict-skeptical" if "SKEPTICAL" in v_type else "verdict-caution")
                     
-                    st.markdown(f"""
+                    verdict_html = textwrap.dedent(f"""
                     <div class="{box_class}">
                         <h4 style="margin:0 0 6px 0;">{row['name']} ({row['position']}, {row['team']} - £{row['cost']:.1f}m)</h4>
                         <div><strong>Verdict:</strong> {row['verdict']}</div>
                         <div style="margin-top:4px;"><strong>Quantitative Analysis:</strong> {row['quantitative_reasoning']}</div>
                     </div>
-                    """, unsafe_allow_html=True)
+                    """).strip()
+                    st.markdown(verdict_html, unsafe_allow_html=True)
                 
                 st.markdown("---")
                 st.subheader("⚙️ Custom Rate Multiplier Overrides")
