@@ -1,4 +1,4 @@
-# Jetski FPL ⚽
+# Overfit FPL ⚽
 
 I spend my day job working on frontier AI, but like millions of others, my weekends revolve around Fantasy Premier League.
 
@@ -27,8 +27,9 @@ Under the hood, it handles the real rules of the game:
 
 ### Local Setup
 ```bash
-git clone https://github.com/[YOUR_USERNAME]/jetski-fpl-team.git
-cd jetski-fpl-team
+git clone https://github.com/iamanshul/overfit-fpl-team.git
+cd overfit-fpl-team
+
 
 python3 -m venv venv
 source venv/bin/activate

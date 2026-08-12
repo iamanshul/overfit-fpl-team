@@ -13,7 +13,7 @@ import numpy as np
 import streamlit as st
 
 st.set_page_config(
-    page_title="Jetski FPL Quantitative Engine",
+    page_title="Overfit FPL Quantitative Engine",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -105,7 +105,7 @@ st.markdown("""
 check_and_auto_update_data(max_age_hours=2)
 
 # Sidebar Controls
-st.sidebar.title("⚽ Jetski FPL Control Center")
+st.sidebar.title("⚽ Overfit FPL Control Center")
 
 info = get_last_updated_info()
 st.sidebar.markdown("### 📡 Data Warehouse Status")
@@ -218,7 +218,7 @@ if st.session_state["manual_overrides"] and not matrix.empty:
     matrix = analyzer.apply_user_overrides(st.session_state["manual_overrides"])
 
 # Header
-st.title("🏆 Jetski FPL Quantitative Decision Engine")
+st.title("🏆 Overfit FPL Quantitative Decision Engine")
 st.caption(f"Real-Time Manager Tracking (`ID: {MY_MANAGER_ID}`) | Data Last Synced: **{info['last_updated']}**")
 
 # Top KPI Bar
