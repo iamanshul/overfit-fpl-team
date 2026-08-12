@@ -445,27 +445,36 @@ with tab2:
 
     if gen_single or gen_multi:
         with st.spinner("Executing Mathematical Solver & Adversarial Critique Engine..."):
-            if gen_multi:
-                squad_gw1, bank_rem, iter_history = iterative_squad_optimization_loop(
-                    history_df,
-                    budget=budget_input,
-                    formation=formation_input,
-                    locked_player_ids=locked_pids,
-                    max_rounds=3
-                )
-                st.session_state["iter_history"] = iter_history
-            else:
-                squad_gw1, bank_rem = build_gw1_start_of_season_squad(
-                    history_df,
-                    budget=budget_input,
-                    formation=formation_input,
-                    locked_player_ids=locked_pids,
-                    max_unspent_bank=0.0
-                )
-                st.session_state.pop("iter_history", None)
+            try:
+                if gen_multi:
+                    squad_gw1, bank_rem, iter_history = iterative_squad_optimization_loop(
+                        history_df,
+                        budget=budget_input,
+                        formation=formation_input,
+                        locked_player_ids=locked_pids,
+                        max_rounds=3
+                    )
+                    st.session_state["iter_history"] = iter_history
+                else:
+                    squad_gw1, bank_rem = build_gw1_start_of_season_squad(
+                        history_df,
+                        budget=budget_input,
+                        formation=formation_input,
+                        locked_player_ids=locked_pids,
+                        max_unspent_bank=0.0
+                    )
+                    st.session_state.pop("iter_history", None)
 
-            st.session_state["squad_gw1"] = squad_gw1
-            st.session_state["bank_rem"] = bank_rem
+                if not squad_gw1.empty:
+                    st.session_state["squad_gw1"] = squad_gw1
+                    st.session_state["bank_rem"] = bank_rem
+                    st.success("✅ GW1 Optimal Squad successfully generated and audited!")
+                else:
+                    st.warning("⚠️ Solver returned empty squad. Please adjust budget or player locks.")
+            except Exception as e:
+                st.error(f"❌ Error during optimization: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
     if "squad_gw1" in st.session_state and not st.session_state["squad_gw1"].empty:
         squad_gw1 = st.session_state["squad_gw1"]

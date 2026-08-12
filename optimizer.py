@@ -5,6 +5,7 @@ Solves rolling horizon Model Predictive Control (MPC) squad selection, transfers
 FT accumulation (up to 5 FTs), hit penalties, and shadow chip activation solves.
 """
 
+import os
 import pulp
 import pandas as pd
 import numpy as np
@@ -265,8 +266,24 @@ class MultiPeriodMILP:
             if min_squad_cost is not None and is_gw1:
                 prob += pulp.lpSum([x[(p, gw)] * self.costs[p] for p in self.players]) >= min_squad_cost
 
-        # Solve
-        prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=20))
+        # Solve with multi-solver fallback for Linux and macOS environments
+        solver = None
+        if os.path.exists("/usr/bin/cbc"):
+            try:
+                solver = pulp.COIN_CMD(path="/usr/bin/cbc", msg=False, timeLimit=20)
+            except Exception:
+                solver = None
+
+        if solver is None:
+            try:
+                solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=20)
+            except Exception:
+                solver = pulp.LpSolverDefault
+
+        try:
+            prob.solve(solver)
+        except Exception:
+            prob.solve()
 
         status_str = pulp.LpStatus[prob.status]
         if status_str != "Optimal":

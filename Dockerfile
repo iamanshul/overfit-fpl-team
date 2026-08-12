@@ -9,10 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including native CBC and GLPK MILP solvers for Linux)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    coinor-cbc \
+    glpk-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install python dependencies
