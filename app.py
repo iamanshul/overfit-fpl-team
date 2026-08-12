@@ -101,14 +101,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Auto-update check (runs once per session to avoid blocking UI interactions)
-if "data_checked" not in st.session_state:
-    st.session_state["data_checked"] = True
-    try:
-        check_and_auto_update_data(max_age_hours=6)
-    except Exception:
-        pass
-
 # Sidebar Controls
 st.sidebar.title("⚽ Overfit FPL Control Center")
 
