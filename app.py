@@ -183,8 +183,19 @@ def render_player_card(row, fix_map=None):
     badge_cls = "badge-cap" if "👑 Captain" in role else ("badge-starter" if role != "Bench" else "badge-bench")
     card_cls = "player-card-captain" if "👑 Captain" in role else ("player-card-starter" if role != "Bench" else "player-card-bench")
     
-    xp_val = row.get("GW1_xP", row.get("xP_1", 4.0))
-    xp = 4.0 if pd.isna(xp_val) else float(xp_val)
+    xp_val = row.get("GW1_xP")
+    if xp_val is None or pd.isna(xp_val) or float(xp_val) <= 0.0:
+        for c in ["xP_1", "xP_2", "xP_3", "xP_4", "xP_5", "xP_6", "xP_7", "xP_8"]:
+            if c in row and pd.notna(row.get(c)) and float(row.get(c)) > 0.0:
+                xp_val = row.get(c)
+                break
+    if xp_val is None or pd.isna(xp_val) or float(xp_val) <= 0.0:
+        if "xP_horizon_sum" in row and pd.notna(row.get("xP_horizon_sum")) and float(row.get("xP_horizon_sum")) > 0.0:
+            xp_val = float(row.get("xP_horizon_sum")) / 6.0
+        else:
+            pos = str(row.get("position", "MID"))
+            xp_val = 3.8 if pos in ["GKP", "DEF"] else (4.6 if pos == "MID" else 5.2)
+    xp = float(xp_val)
     
     cost_val = row.get("cost", 5.0)
     cost = 5.0 if pd.isna(cost_val) else float(cost_val)
@@ -441,85 +452,88 @@ with hub1:
                 opt_cols = [c for c in ["chance_of_playing", "news", "status"] if c in matrix.columns]
                 req_cols = ["player_id", f"xP_{start_gw}", "r_goal", "r_assist", "xM", "team_cs_rate"] + opt_cols
                 req_cols = [c for c in req_cols if c in matrix.columns]
-                merged_squad = active_squad.merge(
-                    matrix[req_cols],
-                    on="player_id",
-                    how="left"
-                ).rename(columns={f"xP_{start_gw}": "GW1_xP"})
+            merged_squad = active_squad.merge(
+                matrix[req_cols],
+                on="player_id",
+                how="left"
+            ).rename(columns={f"xP_{start_gw}": "GW1_xP"})
+        else:
+            merged_squad = active_squad.copy()
+            
+        if "GW1_xP" not in merged_squad.columns or merged_squad["GW1_xP"].isna().any():
+            merged_squad["GW1_xP"] = merged_squad.get("GW1_xP", pd.Series([4.0]*len(merged_squad))).fillna(4.0)
+
+        if "position" not in merged_squad.columns: merged_squad["position"] = "MID"
+        if "name" not in merged_squad.columns: merged_squad["name"] = "Player"
+        if "team" not in merged_squad.columns: merged_squad["team"] = "Premier League"
+        if "cost" not in merged_squad.columns: merged_squad["cost"] = 5.0
+
+        merged_squad["rationale"] = merged_squad.apply(lambda r: generate_player_rationale(r, r.get("GW1_xP", 4.0)), axis=1)
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: st.metric("Active Squad Size", f"{len(merged_squad)} / 15 Players")
+        with k2: st.metric("Bank Balance", f"£{bank:.1f}m")
+        with k3: st.metric("Available Free Transfers", f"{fts} FTs")
+        with k4: st.metric("GW1 Total Projected xP", f"{merged_squad['GW1_xP'].fillna(0).sum():.2f} pts")
+
+        st.markdown("---")
+        st.subheader("📋 Active 15-Man Squad Cards & Selection Rationales")
+        
+        def clean_role(r):
+            r_str = str(r)
+            if "Captain" in r_str and "Vice" not in r_str: return "👑 Captain"
+            elif "Vice" in r_str: return "🥈 Vice Captain"
+            elif r_str == "Bench": return "Bench"
+            else: return "Starter"
+
+        merged_squad["role"] = merged_squad["role"].apply(clean_role)
+
+        starters_act = merged_squad[merged_squad["role"] != "Bench"]
+        bench_act = merged_squad[merged_squad["role"] == "Bench"]
+        
+        c_starters, c_bench = st.columns([2, 1])
+        with c_starters:
+            st.markdown(f"### ⚽ Starting 11 Starters ({len(starters_act)} Players)")
+            for pos in ["GKP", "DEF", "MID", "FWD"]:
+                pos_players = starters_act[starters_act["position"] == pos]
+                if not pos_players.empty:
+                    st.markdown(f"**{pos}s:**")
+                    for _, p_row in pos_players.iterrows():
+                        render_player_card(p_row)
+
+        with c_bench:
+            st.markdown(f"### 🪑 Bench Enablers ({len(bench_act)} Players)")
+            for _, p_row in bench_act.iterrows():
+                render_player_card(p_row)
+
+
+        st.markdown("---")
+        st.subheader("🔄 Interactive Transfer Execution Tool")
+        c_sell, c_buy = st.columns(2)
+        with c_sell:
+            sell_options = {str(k): str(v) for k, v in zip(merged_squad["player_id"], merged_squad["name"] + " (" + merged_squad["position"] + " - £" + merged_squad["cost"].astype(str) + "m)")}
+            sell_pid_str = st.selectbox("Sell Player (Out)", options=list(sell_options.keys()), format_func=lambda x: sell_options[str(x)], key="act_sell_p")
+            sell_pid = int(sell_pid_str) if sell_pid_str else None
+        with c_buy:
+            if not matrix.empty:
+                owned_ids = merged_squad["player_id"].tolist()
+                market_df = matrix[~matrix["player_id"].isin(owned_ids)].sort_values("xP_horizon_sum", ascending=False)
+                buy_options = {str(k): str(v) for k, v in zip(market_df["player_id"], market_df["name"] + " (" + market_df["position"] + ", " + market_df["team"] + " - £" + market_df["cost"].astype(str) + "m)")}
+                buy_pid_str = st.selectbox("Buy Player (In)", options=list(buy_options.keys()), format_func=lambda x: buy_options[str(x)], key="act_buy_p")
+                buy_pid = int(buy_pid_str) if buy_pid_str else None
             else:
-                merged_squad = active_squad.copy()
-                if "GW1_xP" not in merged_squad.columns:
-                    merged_squad["GW1_xP"] = 4.0
+                buy_pid = None
 
-            if "position" not in merged_squad.columns: merged_squad["position"] = "MID"
-            if "name" not in merged_squad.columns: merged_squad["name"] = "Player"
-            if "team" not in merged_squad.columns: merged_squad["team"] = "Premier League"
-            if "cost" not in merged_squad.columns: merged_squad["cost"] = 5.0
-
-            merged_squad["rationale"] = merged_squad.apply(lambda r: generate_player_rationale(r, r.get("GW1_xP", 4.0)), axis=1)
-
-            k1, k2, k3, k4 = st.columns(4)
-            with k1: st.metric("Active Squad Size", f"{len(merged_squad)} / 15 Players")
-            with k2: st.metric("Bank Balance", f"£{bank:.1f}m")
-            with k3: st.metric("Available Free Transfers", f"{fts} FTs")
-            with k4: st.metric("GW1 Total Projected xP", f"{merged_squad['GW1_xP'].fillna(0).sum():.2f} pts")
-
-            st.markdown("---")
-            st.subheader("📋 Active 15-Man Squad Cards & Selection Rationales")
-            
-            def clean_role(r):
-                r_str = str(r)
-                if "Captain" in r_str and "Vice" not in r_str: return "👑 Captain"
-                elif "Vice" in r_str: return "🥈 Vice Captain"
-                elif r_str == "Bench": return "Bench"
-                else: return "Starter"
-
-            merged_squad["role"] = merged_squad["role"].apply(clean_role)
-
-            starters_act = merged_squad[merged_squad["role"] != "Bench"]
-            bench_act = merged_squad[merged_squad["role"] == "Bench"]
-            
-            c_starters, c_bench = st.columns([2, 1])
-            with c_starters:
-                st.markdown(f"### ⚽ Starting 11 Starters ({len(starters_act)} Players)")
-                for pos in ["GKP", "DEF", "MID", "FWD"]:
-                    pos_players = starters_act[starters_act["position"] == pos]
-                    if not pos_players.empty:
-                        st.markdown(f"**{pos}s:**")
-                        for _, p_row in pos_players.iterrows():
-                            render_player_card(p_row)
-
-            with c_bench:
-                st.markdown(f"### 🪑 Bench Enablers ({len(bench_act)} Players)")
-                for _, p_row in bench_act.iterrows():
-                    render_player_card(p_row)
-
-            st.markdown("---")
-            st.subheader("🔄 Interactive Transfer Execution Tool")
-            c_sell, c_buy = st.columns(2)
-            with c_sell:
-                sell_options = {str(k): str(v) for k, v in zip(merged_squad["player_id"], merged_squad["name"] + " (" + merged_squad["position"] + " - £" + merged_squad["cost"].astype(str) + "m)")}
-                sell_pid_str = st.selectbox("Sell Player (Out)", options=list(sell_options.keys()), format_func=lambda x: sell_options[str(x)], key="act_sell_p")
-                sell_pid = int(sell_pid_str) if sell_pid_str else None
-            with c_buy:
-                if not matrix.empty:
-                    owned_ids = merged_squad["player_id"].tolist()
-                    market_df = matrix[~matrix["player_id"].isin(owned_ids)].sort_values("xP_horizon_sum", ascending=False)
-                    buy_options = {str(k): str(v) for k, v in zip(market_df["player_id"], market_df["name"] + " (" + market_df["position"] + ", " + market_df["team"] + " - £" + market_df["cost"].astype(str) + "m)")}
-                    buy_pid_str = st.selectbox("Buy Player (In)", options=list(buy_options.keys()), format_func=lambda x: buy_options[str(x)], key="act_buy_p")
-                    buy_pid = int(buy_pid_str) if buy_pid_str else None
+        if st.button("Confirm Transfer & Update Squad State", type="primary", key="btn_confirm_tr"):
+            if sell_pid and buy_pid:
+                buy_row = matrix[matrix["player_id"] == buy_pid].iloc[0]
+                success, msg, new_squad, new_bank, new_fts, hit = execute_squad_transfer(merged_squad, sell_pid, buy_row, bank, fts)
+                if success:
+                    st.success(msg)
+                    st.rerun()
                 else:
-                    buy_pid = None
+                    st.error(msg)
 
-            if st.button("Confirm Transfer & Update Squad State", type="primary", key="btn_confirm_tr"):
-                if sell_pid and buy_pid:
-                    buy_row = matrix[matrix["player_id"] == buy_pid].iloc[0]
-                    success, msg, new_squad, new_bank, new_fts, hit = execute_squad_transfer(merged_squad, sell_pid, buy_row, bank, fts)
-                    if success:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
 
     # --- 1.3 6-GW ROADMAP ---
     with subtab_squad_roadmap:

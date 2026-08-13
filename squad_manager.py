@@ -122,7 +122,10 @@ def generate_player_rationale(player_row, gw1_xp=0.0):
         r_assist = safe_float(player_row.get("r_assist"), 0.0)
         xM = safe_float(player_row.get("xM"), 75.0)
         cs_rate = safe_float(player_row.get("team_cs_rate"), 0.25)
-        gw1_xp_val = safe_float(gw1_xp, 4.0)
+        
+        gw1_xp_val = safe_float(gw1_xp, 0.0)
+        if gw1_xp_val <= 0.0:
+            gw1_xp_val = 3.8 if pos in ["GKP", "DEF"] else (4.6 if pos == "MID" else 5.2)
 
         cs_pct = int(round(cs_rate * 100.0))
 
@@ -325,7 +328,12 @@ def build_gw1_start_of_season_squad(history_df, budget=100.0, formation=None, lo
         cap_id = xi_ids[0]
 
     squad_df = matrix[matrix["player_id"].isin(squad_ids)].copy()
-    squad_df["GW1_xP"] = squad_df.get("xP_1", 4.0)
+    xp_cols = [c for c in matrix.columns if c.startswith("xP_") and c != "xP_horizon_sum"]
+    first_xp = xp_cols[0] if xp_cols else "xP_1"
+    if first_xp in squad_df.columns:
+        squad_df["GW1_xP"] = squad_df[first_xp].fillna(4.0)
+    else:
+        squad_df["GW1_xP"] = 4.0
     
     # Assign Roles
     roles = []
