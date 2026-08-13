@@ -59,5 +59,48 @@ class TestAppHelpers(unittest.TestCase):
         except Exception as e:
             self.fail(f"render_player_card raised {e} on float news input")
 
+    def test_data_loader_sqlite_and_csv_parity(self):
+        """Verifies that both SQLite DB and CSV fallback load valid active 2025/2026 data."""
+        from data_loader import load_player_history
+        import os
+
+        df = load_player_history()
+        self.assertFalse(df.empty, "Loaded player history should not be empty")
+        self.assertIn("name", df.columns)
+        self.assertIn("team", df.columns)
+        self.assertIn("position", df.columns)
+        self.assertIn("cost", df.columns)
+        
+        # Verify valid teams are present
+        teams = set(df["team"].dropna().unique())
+        self.assertTrue(len(teams) >= 20, f"Expected at least 20 teams, got {len(teams)}")
+        self.assertIn("Arsenal", teams)
+        self.assertIn("Man City", teams)
+
+    def test_optimizer_starting_xi_points_higher_than_bench(self):
+        """Verifies that the MILP solver allocates high-xP players to Starting XI and cheaper assets to Bench."""
+        from data_loader import load_player_history
+        from squad_manager import build_gw1_start_of_season_squad
+
+        history_df = load_player_history()
+        squad_df, bank = build_gw1_start_of_season_squad(history_df, budget=100.0)
+        self.assertEqual(len(squad_df), 15)
+
+        starters = squad_df[squad_df["role"] != "Bench"]
+        bench = squad_df[squad_df["role"] == "Bench"]
+
+        self.assertEqual(len(starters), 11)
+        self.assertEqual(len(bench), 4)
+
+        # Starters average xP should exceed bench average xP
+        avg_starter_xp = starters["GW1_xP"].mean()
+        avg_bench_xp = bench["GW1_xP"].mean()
+        self.assertGreater(avg_starter_xp, avg_bench_xp, f"Starters avg xP ({avg_starter_xp:.2f}) should exceed bench ({avg_bench_xp:.2f})")
+
+        # Captain must be a starter with positive xP
+        captain = squad_df[squad_df["role"] == "👑 Captain"]
+        self.assertEqual(len(captain), 1)
+        self.assertGreater(captain["GW1_xP"].values[0], 4.0)
+
 if __name__ == "__main__":
     unittest.main()

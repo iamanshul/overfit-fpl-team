@@ -223,19 +223,21 @@ def render_player_card(row, fix_map=None):
                 pills.append(f'<span style="background-color:{f["bg"]}; color:{f["fg"]}; padding:2px 6px; border-radius:4px; font-size:0.75em; font-weight:bold; margin-right:3px;">{f["text"]}</span>')
             fix_html = f'<div style="margin-top:4px; display:flex; align-items:center;"><span style="font-size:0.78em; color:#8b949e; margin-right:5px; font-weight:600;">Next 3:</span>{"".join(pills)}</div>'
 
-    card_html = textwrap.dedent(f"""
-    <div class="{card_cls}">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div><strong>{row.get('name', 'Player')}</strong> {flag_html}</div>
-            <span class="{badge_cls}">{role}</span>
-        </div>
-        <div style="margin-top:4px; font-size:0.9em;">
-            <span style="color:#58a6ff;">{row.get('position', 'MID')}</span> | {row.get('team', 'UNK')} | <strong>£{cost:.1f}m</strong> | <strong>{xp:.2f} xP</strong>
-        </div>
-        {fix_html}
-        <div class="rationale-text">"{row.get('rationale', 'Selected based on baseline xP.')}"</div>
-    </div>
-    """).strip()
+    rationale_raw = str(row.get('rationale', 'Selected based on baseline xP.')).strip()
+    if rationale_raw.startswith('"') and rationale_raw.endswith('"') and len(rationale_raw) > 2:
+        rationale_raw = rationale_raw[1:-1].strip()
+
+    card_html = f"""<div class="{card_cls}">
+<div style="display:flex; justify-content:space-between; align-items:center;">
+<div><strong>{row.get('name', 'Player')}</strong> {flag_html}</div>
+<span class="{badge_cls}">{role}</span>
+</div>
+<div style="margin-top:4px; font-size:0.9em;">
+<span style="color:#58a6ff;">{row.get('position', 'MID')}</span> | {row.get('team', 'UNK')} | <strong>£{cost:.1f}m</strong> | <strong>{xp:.2f} xP</strong>
+</div>
+{fix_html}
+<div class="rationale-text">"{rationale_raw}"</div>
+</div>"""
     st.markdown(card_html, unsafe_allow_html=True)
 
 # ==============================================================================
