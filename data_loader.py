@@ -419,41 +419,47 @@ def fetch_clubelo_ratings(target_date=None):
     return default_elo
 
 def load_player_history():
-    """Loads historical player match dataset from SQLite DB or CSV fallback."""
-    if os.path.exists(DB_PATH):
-        conn = get_db_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='player_match_history'")
-            if cur.fetchone():
-                df = pd.read_sql("SELECT * FROM player_match_history", conn)
-                if not df.empty:
-                    meta = pd.read_sql("""
-                        SELECT m.id as element_id, m.web_name as name, m.position, m.now_cost, m.status, m.news, m.chance_of_playing,
-                               m.selected_by_percent, m.transfers_in_event, m.transfers_out_event,
-                               m.penalties_order, m.direct_freekicks_order, m.corners_and_indirect_freekicks_order,
-                               m.has_midweek_uefa, m.age, m.height_cm, t.name as team
-                        FROM players_meta m
-                        LEFT JOIN teams t ON m.team_id = t.id
-                    """, conn)
-                    teams_opp = pd.read_sql("SELECT id as opponent_team_id, name as opponent_team_name FROM teams", conn)
-                    
-                    # Drop stale team/name/cost columns from history prior to merge so live meta takes priority
-                    cols_to_drop = [c for c in ['team', 'team_name', 'name', 'position', 'cost', 'now_cost', 'status', 'news', 'chance_of_playing', 'age', 'height_cm'] if c in df.columns]
-                    df = df.drop(columns=cols_to_drop)
-                    
-                    df = df.merge(meta, on='element_id', how='left')
-                    df = df.merge(teams_opp, left_on='opponent_team', right_on='opponent_team_id', how='left')
-                    if 'opponent_team_id' in df.columns:
-                        df = df.drop(columns=['opponent_team_id'])
-                    df['player_id'] = df['element_id']
-                    df['gameweek'] = df['round']
-                    df['cost'] = df['now_cost'] / 10.0
-                    return df
-        except Exception as e:
-            print(f"⚠️ Error reading DB player history: {e}")
-        finally:
+    """Loads player match dataset from SQLite DB, automatically syncing from live FPL API if DB is uninitialized."""
+    initialize_database()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM player_match_history")
+        count = cur.fetchone()[0]
+        if count == 0:
+            print("📦 Uninitialized database detected. Auto-syncing live official Premier League data...")
             conn.close()
+            sync_fpl_api_data()
+            conn = get_db_connection()
+
+        df = pd.read_sql("SELECT * FROM player_match_history", conn)
+        if not df.empty:
+            meta = pd.read_sql("""
+                SELECT m.id as element_id, m.web_name as name, m.position, m.now_cost, m.status, m.news, m.chance_of_playing,
+                       m.selected_by_percent, m.transfers_in_event, m.transfers_out_event,
+                       m.penalties_order, m.direct_freekicks_order, m.corners_and_indirect_freekicks_order,
+                       m.has_midweek_uefa, m.age, m.height_cm, t.name as team
+                FROM players_meta m
+                LEFT JOIN teams t ON m.team_id = t.id
+            """, conn)
+            teams_opp = pd.read_sql("SELECT id as opponent_team_id, name as opponent_team_name FROM teams", conn)
+            
+            # Drop stale team/name/cost columns from history prior to merge so live meta takes priority
+            cols_to_drop = [c for c in ['team', 'team_name', 'name', 'position', 'cost', 'now_cost', 'status', 'news', 'chance_of_playing', 'age', 'height_cm'] if c in df.columns]
+            df = df.drop(columns=cols_to_drop)
+            
+            df = df.merge(meta, on='element_id', how='left')
+            df = df.merge(teams_opp, left_on='opponent_team', right_on='opponent_team_id', how='left')
+            if 'opponent_team_id' in df.columns:
+                df = df.drop(columns=['opponent_team_id'])
+            df['player_id'] = df['element_id']
+            df['gameweek'] = df['round']
+            df['cost'] = df['now_cost'] / 10.0
+            return df
+    except Exception as e:
+        print(f"⚠️ Error reading DB player history: {e}")
+    finally:
+        conn.close()
 
     # Guaranteed fallback to packaged CSV dataset
     if os.path.exists(CSV_PATH):
@@ -500,7 +506,7 @@ ODDS_TO_FPL_TEAM_MAP = {
 }
 
 def generate_fallback_odds_from_elo():
-    """Generates synthetic devigged market odds from live ClubElo ratings if API is unreachable."""
+    """Generates synthetic devigged market odds from live ClubElo ratings if API is unreachable or outside 48h deadline window."""
     elo_dict = fetch_clubelo_ratings()
     fixtures = get_full_fpl_schedule()
     rows = []
@@ -535,19 +541,19 @@ def generate_fallback_odds_from_elo():
                 "away_win_prob": round(float(p_a), 3),
                 "home_cs_prob": round(float(cs_h), 3),
                 "away_cs_prob": round(float(cs_a), 3),
-                "bookmaker": "ClubElo Quantitative Engine (Fallback)"
+                "bookmaker": "ClubElo Quantitative Engine (Zero-Quota Baseline)"
             })
     return pd.DataFrame(rows)
 
 def fetch_live_sharp_odds(cache_ttl_hours=ODDS_CACHE_TTL_HOURS, force_refresh=False):
     """
     Fetches real-time Premier League odds from The-Odds-API (UK sharp bookmakers).
-    Implements multi-layer guardrails to prevent API quota exhaustion:
-    1. 5-day (120-hour) local disk cache (reduces API calls to only ~6 requests/month).
-    2. 24-hour strict anti-exhaustion throttle (blocks rapid manual re-triggers).
-    3. Scoped strictly to English Premier League ('soccer_epl').
-    4. De-vigs odds using Shin's algorithm into true probabilities.
-    5. Graceful fallback to ClubElo ratings if offline or API quota is exhausted.
+    Guards betting API quota strictly:
+    1. Zero automatic calls until within 48h (2 days) of the upcoming Gameweek deadline.
+    2. 5-day (120-hour) local disk cache.
+    3. 24-hour strict anti-exhaustion throttle between manual refreshes.
+    4. Scoped strictly to English Premier League ('soccer_epl').
+    5. Fallback to ClubElo quantitative model outside the 48h window.
     """
     initialize_database()
     conn = get_db_connection()
@@ -564,7 +570,7 @@ def fetch_live_sharp_odds(cache_ttl_hours=ODDS_CACHE_TTL_HOURS, force_refresh=Fa
         except Exception:
             pass
 
-    # 2. Check 12-hour strict throttle (anti-quota burnout safeguard)
+    # 2. Check 24-hour strict throttle
     try:
         cur = conn.cursor()
         cur.execute("SELECT timestamp FROM meta_cache WHERE key = 'last_odds_api_sync'")
@@ -577,6 +583,34 @@ def fetch_live_sharp_odds(cache_ttl_hours=ODDS_CACHE_TTL_HOURS, force_refresh=Fa
                     return pd.read_csv(ODDS_CACHE_PATH)
     except Exception:
         pass
+
+    # 3. Check 48-hour (2 days before GW) deadline window if not manually forced
+    is_near_deadline = False
+    if not force_refresh:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT MIN(kickoff_time) FROM fixtures WHERE finished = 0 AND kickoff_time IS NOT NULL")
+            row_ko = cur.fetchone()
+            if row_ko and row_ko[0]:
+                ko_str = str(row_ko[0])
+                if "T" in ko_str:
+                    ko_dt = datetime.datetime.fromisoformat(ko_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                else:
+                    ko_dt = datetime.datetime.strptime(ko_str[:19], "%Y-%m-%d %H:%M:%S")
+                diff_hours = (ko_dt - datetime.datetime.utcnow()).total_seconds() / 3600.0
+                if 0 <= diff_hours <= 48.0:
+                    is_near_deadline = True
+        except Exception:
+            pass
+
+    # If outside the 48h deadline window and not manually forced, use cache or ClubElo fallback
+    if not force_refresh and not is_near_deadline:
+        if os.path.exists(ODDS_CACHE_PATH):
+            try:
+                return pd.read_csv(ODDS_CACHE_PATH)
+            except Exception:
+                pass
+        return generate_fallback_odds_from_elo()
 
     # 3. Fetch from The-Odds-API if API key is present
     if ODDS_API_KEY:
