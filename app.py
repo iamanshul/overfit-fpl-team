@@ -27,7 +27,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data_loader import (
     sync_fpl_api_data, get_last_updated_info, check_and_auto_update_data,
     load_player_history, fetch_clubelo_ratings, get_full_fpl_schedule,
-    get_clubelo_visualization_df, get_player_availability_df, get_db_connection
+    get_clubelo_visualization_df, get_player_availability_df, get_db_connection,
+    fetch_live_sharp_odds, get_odds_quota_info, get_price_change_radar_df
 )
 from rate_engine import CanonicalRateEngine
 from devig_engine import SharpOddsEngine
@@ -37,7 +38,7 @@ from squad_manager import (
     generate_player_rationale, SquadAdversarialCritic, iterative_squad_optimization_loop
 )
 from article_analyzer import ArticleSentimentEngine
-from chip_evaluator import ChipEvaluator
+from chip_evaluator import ChipEvaluator, MacroSeasonChipScheduler
 from backtester import WalkForwardBacktestHarness
 from optimizer import MultiPeriodMILP
 
@@ -600,16 +601,46 @@ with hub1:
                 thresh = dec.get("threshold", 0.0)
                 st.markdown(f"**{chip_name.upper()}:** {status_str} (Hurdle Threshold: +{thresh:.1f} xP)")
 
+        st.markdown("---")
+        st.subheader("🗺️ 38-Gameweek Macro-Season Strategic Chip Roadmap & Timeline")
+        st.caption("Global dynamic calendar mapping optimal multi-period execution windows for Wildcard 1, Free Hit, Wildcard 2, Bench Boost, and Triple Captain.")
+
+        p1, p2, p3, p4 = st.columns(4)
+        with p1: st.info("⚡ **Wildcard 1**\n\n**Window:** GW 6–8\n\n**Objective:** Restructure early punts & lock value.")
+        with p2: st.warning("🛡️ **Free Hit**\n\n**Target:** BGW 29\n\n**Objective:** Field 11 starters during FA Cup clashes.")
+        with p3: st.info("⚡ **Wildcard 2**\n\n**Window:** GW 31–33\n\n**Objective:** Build 15 DGW starters before Bench Boost.")
+        with p4: st.success("🚀 **Bench Boost**\n\n**Target:** DGW 34 / 37\n\n**Objective:** Maximize 30 player appearances.")
+
+        macro_roadmap_df = MacroSeasonChipScheduler.generate_macro_roadmap()
+        
+        # Interactive Gameweek Scrubbing Inspector
+        st.markdown("##### 🔍 Inspect Specific Gameweek Strategy")
+        selected_gw_scrub = st.slider("Select Gameweek to Inspect", min_value=1, max_value=38, value=int(start_gw), key="gw_scrub_slider")
+        gw_row = macro_roadmap_df[macro_roadmap_df["GW_Num"] == selected_gw_scrub].iloc[0]
+        
+        st.markdown(f"""
+        <div style="background: rgba(255, 255, 255, 0.05); padding: 14px 18px; border-radius: 8px; border-left: 4px solid #00ff87; margin-bottom: 12px;">
+            <div style="font-size: 1.1em; font-weight: bold; color: #00ff87;">Gameweek {selected_gw_scrub:02d} — {gw_row['Season_Phase']}</div>
+            <div style="margin-top: 4px;"><strong>Fixture Profile:</strong> {gw_row['Fixture_Status']} | <strong>Chip Recommendation:</strong> {gw_row['Strategic_Chip_Target']}</div>
+            <div style="margin-top: 4px; color: #cbd5e1;"><strong>Tactical Directive:</strong> {gw_row['Tactical_Objective']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.dataframe(macro_roadmap_df.drop(columns=["GW_Num"]), hide_index=True, use_container_width=True)
+
+
+
 # ==============================================================================
 # HUB 2: PLAYER SCOUT & DIRECT COMPARISON STUDIO
 # ==============================================================================
 with hub2:
     st.caption("Deep-dive player analysis: Compare alternative options head-to-head, filter and scout 600+ Premier League assets, and monitor live injury & suspension reports.")
     
-    subtab_scout_h2h, subtab_scout_table, subtab_scout_injuries = st.tabs([
+    subtab_scout_h2h, subtab_scout_table, subtab_scout_injuries, subtab_scout_price = st.tabs([
         "⚖️ Head-to-Head Option Comparison",
         "🔎 Interactive Player Scout Table",
-        "🏥 Availability & Injury Radar"
+        "🏥 Availability & Injury Radar",
+        "📈 Daily Price Change & Wealth Radar"
     ])
 
     # Prepare matrix with display helpers
@@ -794,6 +825,65 @@ with hub2:
                 use_container_width=True
             )
 
+    # --- 2.4 DAILY PRICE CHANGE & WEALTH RADAR ---
+    with subtab_scout_price:
+        st.header("📈 Daily Price Change & Wealth Accumulation Radar")
+        st.caption("Tracks transfer flow velocity, net daily buy/sell volume, and proximity to the ±100% threshold for midnight FPL price changes.")
+
+        radar_df = get_price_change_radar_df()
+        if not radar_df.empty:
+            rising_df = radar_df[radar_df["target_progress_pct"] >= 40.0].sort_values("target_progress_pct", ascending=False)
+            falling_df = radar_df[radar_df["target_progress_pct"] <= -40.0].sort_values("target_progress_pct", ascending=True)
+
+            top_riser = rising_df.iloc[0] if not rising_df.empty else None
+            top_faller = falling_df.iloc[0] if not falling_df.empty else None
+
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                if top_riser is not None:
+                    st.metric("🔥 Top Price Rise Target", f"{top_riser['name']}", delta=f"{top_riser['target_progress_pct']:+.1f}% Target")
+                else:
+                    st.metric("🔥 Top Price Rise Target", "None Imminent")
+            with k2:
+                if top_faller is not None:
+                    st.metric("❄️ Top Price Fall Risk", f"{top_faller['name']}", delta=f"{top_faller['target_progress_pct']:.1f}% Target", delta_color="inverse")
+                else:
+                    st.metric("❄️ Top Price Fall Risk", "None Imminent")
+            with k3:
+                st.metric("High-Velocity Assets", f"{len(rising_df) + len(falling_df)} Players")
+            with k4:
+                st.metric("Model Wealth Policy", "Active (GW 1-15)", delta="Wealth Utility Enabled")
+
+            st.markdown("---")
+            pr_c1, pr_c2 = st.columns([1, 1])
+            with pr_c1:
+                pr_filter = st.selectbox("Filter Price Velocity", ["All Players", "Imminent Risers (≥ +90%)", "Buying Pressure (≥ +40%)", "Imminent Fallers (≤ -90%)", "Selling Pressure (≤ -40%)"], key="pr_filter")
+            with pr_c2:
+                pr_search = st.text_input("🔍 Search Player or Club", "", key="pr_search")
+
+            disp_radar = radar_df.copy()
+            if pr_filter == "Imminent Risers (≥ +90%)": disp_radar = disp_radar[disp_radar["target_progress_pct"] >= 90.0]
+            elif pr_filter == "Buying Pressure (≥ +40%)": disp_radar = disp_radar[disp_radar["target_progress_pct"] >= 40.0]
+            elif pr_filter == "Imminent Fallers (≤ -90%)": disp_radar = disp_radar[disp_radar["target_progress_pct"] <= -90.0]
+            elif pr_filter == "Selling Pressure (≤ -40%)": disp_radar = disp_radar[disp_radar["target_progress_pct"] <= -40.0]
+
+            if pr_search:
+                disp_radar = disp_radar[disp_radar["name"].str.contains(pr_search, case=False, na=False) | disp_radar["team"].str.contains(pr_search, case=False, na=False)]
+
+            disp_radar = disp_radar.sort_values("target_progress_pct", ascending=False)
+            
+            st.dataframe(
+                disp_radar[["name", "position", "team", "cost", "selected_by_percent", "transfers_in_event", "transfers_out_event", "net_transfers", "target_progress_pct", "status_badge"]].rename(columns={
+                    "name": "Player Name", "position": "Pos", "cost": "Cost (£m)",
+                    "selected_by_percent": "Ownership %", "transfers_in_event": "Transfers In",
+                    "transfers_out_event": "Transfers Out", "net_transfers": "Net Transfers",
+                    "target_progress_pct": "Threshold %", "status_badge": "Price Change Status"
+                }),
+                hide_index=True,
+                use_container_width=True
+            )
+
+
 # ==============================================================================
 # HUB 3: FIXTURE & MARKET INTELLIGENCE
 # ==============================================================================
@@ -838,49 +928,49 @@ with hub3:
     # --- 3.2 SHARP DE-VIGGED ODDS ---
     with subtab_fix_odds:
         st.header("🎲 Sharp Bookmaker Odds & De-Vigged Market Matrix")
-        st.caption("De-vigs sharp bookmaker odds (Pinnacle/Unibet/Bet365) using Shin's algorithm to extract true market-implied win, clean sheet, and goal probabilities.")
+        st.caption("De-vigs sharp UK bookmaker odds (Betfair/Bet365/Sky Bet) using Shin's algorithm to extract true market-implied win, clean sheet, and goal probabilities.")
 
-        conn_odds = get_db_connection()
-        gw1_fixtures = pd.read_sql("""
-            SELECT f.id, f.event, f.kickoff_time, th.name as home_team, ta.name as away_team
-            FROM fixtures f
-            LEFT JOIN teams th ON f.team_h = th.id
-            LEFT JOIN teams ta ON f.team_a = ta.id
-            WHERE f.event = 1
-            ORDER BY f.kickoff_time ASC
-        """, conn_odds)
-        conn_odds.close()
+        quota_info = get_odds_quota_info()
+        q1, q2, q3, q4 = st.columns(4)
+        with q1: st.metric("Live Market Feed", "The-Odds-API (UK)")
+        with q2: st.metric("Remaining Free Quota", f"{quota_info['remaining']} / 500 req")
+        with q3: st.metric("Odds Cache Age", f"{quota_info['age_hours']} hrs" if quota_info['age_hours'] < 900 else "Just Synced", delta="Fresh (48h Lock)" if quota_info['is_fresh'] else "Refresh Eligible")
+        with q4: st.metric("Last Sync", quota_info['last_sync'].split()[0] if " " in quota_info['last_sync'] else quota_info['last_sync'])
 
-        if not gw1_fixtures.empty:
-            mock_odds = []
-            for _, r in gw1_fixtures.iterrows():
-                h_team, a_team = r["home_team"], r["away_team"]
-                if "Man City" in h_team: h_odds, d_odds, a_odds = 1.25, 6.50, 12.00
-                elif "Arsenal" in h_team: h_odds, d_odds, a_odds = 1.35, 5.20, 9.00
-                elif "Liverpool" in h_team: h_odds, d_odds, a_odds = 1.60, 4.20, 5.50
-                elif "Man City" in a_team: h_odds, d_odds, a_odds = 7.50, 4.80, 1.40
-                elif "Arsenal" in a_team: h_odds, d_odds, a_odds = 6.00, 4.20, 1.55
-                elif "Liverpool" in a_team: h_odds, d_odds, a_odds = 5.00, 4.00, 1.65
-                else: h_odds, d_odds, a_odds = 2.10, 3.40, 3.60
-                
-                devigged = SharpOddsEngine.devig_shins_method([h_odds, d_odds, a_odds])
-                h_cs_pct = max(devigged[0] * 72.0, 15.0)
-                a_cs_pct = max(devigged[2] * 60.0, 12.0)
-                
-                mock_odds.append({
+        c_sync_btn, _ = st.columns([1, 3])
+        with c_sync_btn:
+            if st.button("🔄 Sync Live Odds (12h Throttled)", key="btn_sync_odds"):
+                with st.spinner("Fetching latest Premier League bookmaker odds..."):
+                    fetch_live_sharp_odds(force_refresh=True)
+                    st.success("✅ Odds cache updated!")
+                    st.rerun()
+
+        odds_df = fetch_live_sharp_odds()
+        if not odds_df.empty:
+            display_odds_list = []
+            for _, r in odds_df.iterrows():
+                h_team = r.get("home_team", "")
+                a_team = r.get("away_team", "")
+                display_odds_list.append({
                     "Matchup": f"{h_team} vs {a_team}",
-                    "Home Odds": f"{h_odds:.2f}",
-                    "Draw Odds": f"{d_odds:.2f}",
-                    "Away Odds": f"{a_odds:.2f}",
-                    "Home Win % (Shin)": f"{devigged[0]*100:.1f}%",
-                    "Draw % (Shin)": f"{devigged[1]*100:.1f}%",
-                    "Away Win % (Shin)": f"{devigged[2]*100:.1f}%",
-                    "Home CS %": f"{h_cs_pct:.1f}%",
-                    "Away CS %": f"{a_cs_pct:.1f}%"
+                    "Kickoff": str(r.get("commence_time", ""))[:16].replace("T", " "),
+                    "Bookmaker": r.get("bookmaker", "Market Consensus"),
+                    "Home Odds": f"{float(r.get('home_win_odds', 2.0)):.2f}",
+                    "Draw Odds": f"{float(r.get('draw_odds', 3.2)):.2f}",
+                    "Away Odds": f"{float(r.get('away_win_odds', 3.5)):.2f}",
+                    "Home Win % (Shin)": f"{float(r.get('home_win_prob', 0.40))*100:.1f}%",
+                    "Draw % (Shin)": f"{float(r.get('draw_prob', 0.28))*100:.1f}%",
+                    "Away Win % (Shin)": f"{float(r.get('away_win_prob', 0.32))*100:.1f}%",
+                    "Home Clean Sheet %": f"{float(r.get('home_cs_prob', 0.35))*100:.1f}%",
+                    "Away Clean Sheet %": f"{float(r.get('away_cs_prob', 0.25))*100:.1f}%",
+                    "Over 2.5": f"{float(r.get('over_25_odds', 1.85)):.2f}",
+                    "Under 2.5": f"{float(r.get('under_25_odds', 1.95)):.2f}"
                 })
-                
-            st.subheader("⚽ Gameweek 1 De-Vigged Match Probabilities (Shin's Method)")
-            st.dataframe(pd.DataFrame(mock_odds), hide_index=True, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("⚽ Live Premier League De-Vigged Match Probabilities (Shin's Method)")
+            st.dataframe(pd.DataFrame(display_odds_list), hide_index=True, use_container_width=True)
+
 
         st.markdown("---")
         st.subheader("🎯 Gameweek 1 Anytime Goalscorer Market Odds & De-Vigged Goal Probabilities")
@@ -959,15 +1049,58 @@ with hub4:
     # --- 4.2 BACKTEST SIMULATION ---
     with subtab_lab_backtest:
         st.header("📈 Stateful Walk-Forward Backtest Simulation")
-        st.caption("Validates quantitative policy against historic gameweek data with realistic rolling horizon transfers.")
+        st.caption("Validates quantitative policy against historic gameweek data with realistic rolling horizon transfers, formation-valid auto-subs, and chip activations.")
+
+        bk_c1, bk_c2 = st.columns([1, 1])
+        with bk_c1:
+            bk_start = st.number_input("Start Gameweek", min_value=2, max_value=37, value=2, step=1, key="bk_start_gw")
+        with bk_c2:
+            bk_end = st.number_input("End Gameweek", min_value=2, max_value=38, value=8, step=1, key="bk_end_gw")
         
-        if st.button("🚀 Run Walk-Forward Backtest", key="btn_run_backtest"):
-            with st.spinner("Running sequential multi-gameweek simulation..."):
-                harness = WalkForwardBacktestHarness(start_gw=2, end_gw=8, history_df=history_df)
+        if st.button("🚀 Run Walk-Forward Backtest", type="primary", key="btn_run_backtest"):
+            with st.spinner("Running sequential multi-gameweek simulation with formation-valid substitutions..."):
+                harness = WalkForwardBacktestHarness(start_gw=int(bk_start), end_gw=int(bk_end), history_df=history_df, simulate_chips=True)
                 res_df = harness.run_simulation(verbose=False)
                 if not res_df.empty:
-                    st.line_chart(res_df.set_index("gameweek")[["cumulative_points"]])
-                    st.dataframe(res_df, hide_index=True, use_container_width=True)
+                    st.session_state["backtest_results_df"] = res_df
+
+        if "backtest_results_df" in st.session_state and not st.session_state["backtest_results_df"].empty:
+            res_df = st.session_state["backtest_results_df"].copy()
+            
+            # Benchmark Trajectories
+            res_df["Top 10k Benchmark"] = (res_df["gameweek"] - res_df["gameweek"].min() + 1) * 65.0
+            res_df["World #1 Champion Benchmark"] = (res_df["gameweek"] - res_df["gameweek"].min() + 1) * 70.5
+            res_df["Global Average Benchmark"] = (res_df["gameweek"] - res_df["gameweek"].min() + 1) * 48.0
+            res_df["Overfit FPL SOTA Engine"] = res_df["cumulative_points"]
+
+            final_model_pts = res_df["Overfit FPL SOTA Engine"].iloc[-1]
+            final_top10k_pts = res_df["Top 10k Benchmark"].iloc[-1]
+            final_avg_pts = res_df["Global Average Benchmark"].iloc[-1]
+            gw_count = len(res_df)
+            avg_ppg = final_model_pts / max(1, gw_count)
+
+            b1, b2, b3, b4 = st.columns(4)
+            with b1: st.metric("Cumulative SOTA Points", f"{final_model_pts:.0f} pts", delta=f"{avg_ppg:.1f} pts / GW")
+            with b2: st.metric("vs. Top 10k Benchmark", f"{final_top10k_pts:.0f} pts", delta=f"{final_model_pts - final_top10k_pts:+.0f} pts")
+            with b3: st.metric("vs. Global Average", f"{final_avg_pts:.0f} pts", delta=f"{final_model_pts - final_avg_pts:+.0f} pts")
+            with b4: st.metric("Total Hits Deducted", f"-{res_df['hits_cost'].sum()} pts", delta="Controlled Hit Budget")
+
+            st.markdown("---")
+            st.subheader("📊 Cumulative Equity Curves: Model vs Global Benchmarks")
+            st.caption("Visualizes sequential cumulative point accumulation vs. Top 10k, World Champion (#1), and Global Average benchmarks.")
+            
+            chart_df = res_df.set_index("gameweek")[["Overfit FPL SOTA Engine", "World #1 Champion Benchmark", "Top 10k Benchmark", "Global Average Benchmark"]]
+            st.line_chart(chart_df, color=["#00ff87", "#ffd700", "#38bdf8", "#94a3b8"])
+
+            st.markdown("---")
+            st.subheader("📋 Gameweek Execution Ledger & Auto-Sub Log")
+            disp_ledger = res_df[["gameweek", "sota_engine_points", "active_chip", "transfers_made", "hits_cost", "auto_subs_used", "bank", "free_transfers", "cumulative_points"]].rename(columns={
+                "gameweek": "Gameweek", "sota_engine_points": "GW Points", "active_chip": "Active Chip",
+                "transfers_made": "Transfers", "hits_cost": "Hit Cost", "auto_subs_used": "Auto-Subs Used",
+                "bank": "Bank (£m)", "free_transfers": "Free Transfers", "cumulative_points": "Cumulative Points"
+            })
+            st.dataframe(disp_ledger, hide_index=True, use_container_width=True)
+
 
     # --- 4.3 WHAT-IF SCENARIO STUDIO ---
     with subtab_lab_whatif:

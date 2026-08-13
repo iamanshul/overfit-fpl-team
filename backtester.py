@@ -14,12 +14,20 @@ from optimizer import MultiPeriodMILP
 from config import MAX_FREE_TRANSFERS, TRANSFER_HIT_COST, DATA_DIR
 
 class WalkForwardBacktestHarness:
-    """Stateful walk-forward simulator across completed Premier League gameweeks."""
+    """Stateful walk-forward simulator across completed Premier League gameweeks with formation-valid auto-subs and chip execution."""
 
-    def __init__(self, start_gw=2, end_gw=10, history_df=None):
+    def __init__(self, start_gw=2, end_gw=10, history_df=None, simulate_chips=True):
         self.start_gw = start_gw
         self.end_gw = end_gw
         self.full_history = history_df if history_df is not None and not history_df.empty else load_player_history()
+        self.simulate_chips = simulate_chips
+        self.available_chips = {
+            "wildcard_1": True,  # Eligible GW1-19
+            "wildcard_2": True,  # Eligible GW20-38
+            "freehit": True,
+            "benchboost": True,
+            "triplecaptain": True
+        }
 
     def _select_initial_squad(self):
         """Builds valid initial 15-man squad prior to start_gw using CanonicalRateEngine projections (no lookahead bias)."""
@@ -39,6 +47,66 @@ class WalkForwardBacktestHarness:
 
         return squad_ids, 0.5
 
+    def _resolve_formation_valid_autosubs(self, xi_ids, bench_ids, actual_mins_map, actual_pts_map, pos_map):
+        """
+        Simulates official FPL auto-substitutions ensuring strict formation validity:
+        - Min 1 GKP, 3 DEF, 2 MID, 1 FWD
+        - Max 1 GKP, 5 DEF, 5 MID, 3 FWD
+        - Goalkeeper subbed exclusively by bench Goalkeeper.
+        - Outfield zero-minute players subbed in bench order by eligible outfield players.
+        """
+        playing_xi = [p for p in xi_ids if actual_mins_map.get(p, 0) > 0]
+        zero_mins_xi = [p for p in xi_ids if actual_mins_map.get(p, 0) == 0]
+        
+        current_lineup = list(playing_xi)
+        subs_brought_on = []
+        sub_points = 0
+        
+        # 1. GKP Substitution
+        gkp_zero = [p for p in zero_mins_xi if pos_map.get(p) == "GKP"]
+        bench_gkp = [p for p in bench_ids if pos_map.get(p) == "GKP"]
+        if gkp_zero and bench_gkp:
+            bgkp = bench_gkp[0]
+            if actual_mins_map.get(bgkp, 0) > 0:
+                current_lineup.append(bgkp)
+                subs_brought_on.append(bgkp)
+                sub_points += actual_pts_map.get(bgkp, 0)
+
+        # 2. Outfield Substitutions in Priority Order
+        outfield_bench = [p for p in bench_ids if pos_map.get(p) != "GKP" and actual_mins_map.get(p, 0) > 0]
+        outfield_zero = [p for p in zero_mins_xi if pos_map.get(p) != "GKP"]
+        
+        for _ in outfield_zero:
+            if not outfield_bench:
+                break
+                
+            chosen_sub = None
+            for cand in outfield_bench:
+                trial_lineup = current_lineup + [cand]
+                pos_counts = {
+                    "GKP": sum(1 for p in trial_lineup if pos_map.get(p) == "GKP"),
+                    "DEF": sum(1 for p in trial_lineup if pos_map.get(p) == "DEF"),
+                    "MID": sum(1 for p in trial_lineup if pos_map.get(p) == "MID"),
+                    "FWD": sum(1 for p in trial_lineup if pos_map.get(p) == "FWD"),
+                }
+                remaining_slots = 11 - len(trial_lineup)
+                
+                # Check that trial lineup satisfies formation feasibility bounds
+                if (pos_counts["DEF"] <= 5 and pos_counts["MID"] <= 5 and pos_counts["FWD"] <= 3 and
+                    pos_counts["DEF"] + remaining_slots >= 3 and
+                    pos_counts["MID"] + remaining_slots >= 2 and
+                    pos_counts["FWD"] + remaining_slots >= 1):
+                    chosen_sub = cand
+                    break
+                    
+            if chosen_sub is not None:
+                current_lineup.append(chosen_sub)
+                subs_brought_on.append(chosen_sub)
+                sub_points += actual_pts_map.get(chosen_sub, 0)
+                outfield_bench.remove(chosen_sub)
+
+        return sub_points, len(subs_brought_on), subs_brought_on
+
     def run_simulation(self, verbose=True):
         """Executes walk-forward simulation across gameweeks."""
         if self.full_history.empty:
@@ -51,6 +119,8 @@ class WalkForwardBacktestHarness:
         fts = 1
         ledger = []
 
+        pos_map = dict(zip(self.full_history["player_id"], self.full_history["position"]))
+
         if verbose:
             print(f"🚀 Starting Walk-Forward Simulation from GW {self.start_gw} to GW {self.end_gw}...")
 
@@ -62,8 +132,18 @@ class WalkForwardBacktestHarness:
             engine = CanonicalRateEngine(history_slice)
             matrix = engine.generate_horizon_matrix(start_gw=gw, horizon_weeks=4, elo_dict=elo_dict)
 
+            # Strategic Chip Decision Logic
+            active_chip = None
+            if self.simulate_chips:
+                if gw in range(6, 9) and self.available_chips["wildcard_1"]:
+                    active_chip = "wildcard"
+                    self.available_chips["wildcard_1"] = False
+                elif gw in range(30, 34) and self.available_chips["wildcard_2"]:
+                    active_chip = "wildcard"
+                    self.available_chips["wildcard_2"] = False
+
             optimizer = MultiPeriodMILP(matrix)
-            plan = optimizer.solve_rolling_horizon(squad, bank, initial_fts=fts)
+            plan = optimizer.solve_rolling_horizon(squad, bank, initial_fts=fts, active_chip=active_chip)
 
             if plan.get("status") != "Optimal":
                 xi = squad[:11]
@@ -77,26 +157,21 @@ class WalkForwardBacktestHarness:
                 captain = plan["captain_id"]
                 bench = plan["bench_ids"]
                 bank = plan["bank"]
-                hits_cost = plan["hits_cost"]
+                hits_cost = 0 if active_chip == "wildcard" else plan["hits_cost"]
                 t_made = len(plan["transfers_in"])
 
             actual_gw = self.full_history[self.full_history["gameweek"] == gw]
             actual_pts_map = dict(zip(actual_gw["player_id"], actual_gw["total_points"]))
             actual_mins_map = dict(zip(actual_gw["player_id"], actual_gw["minutes"]))
 
+            # Calculate Starting XI points
             xi_pts = 0
-            played_xi = []
-            zero_mins_xi = []
-
             for p in xi:
                 mins = actual_mins_map.get(p, 0)
-                pts = actual_pts_map.get(p, 0)
                 if mins > 0:
-                    xi_pts += pts
-                    played_xi.append(p)
-                else:
-                    zero_mins_xi.append(p)
+                    xi_pts += actual_pts_map.get(p, 0)
 
+            # Captain & Vice-Captain Resolution
             cap_mins = actual_mins_map.get(captain, 0)
             if cap_mins > 0:
                 cap_pts = actual_pts_map.get(captain, 0)
@@ -107,21 +182,21 @@ class WalkForwardBacktestHarness:
                 else:
                     cap_pts = 0
 
-            sub_pts = 0
-            subs_used = 0
-            for zp in zero_mins_xi:
-                if subs_used >= len(bench):
-                    break
-                sub_id = bench[subs_used]
-                if actual_mins_map.get(sub_id, 0) > 0:
-                    sub_pts += actual_pts_map.get(sub_id, 0)
-                subs_used += 1
+            # Execute Formation-Valid Auto-Substitutions
+            sub_pts, subs_used, subs_list = self._resolve_formation_valid_autosubs(
+                xi, bench, actual_mins_map, actual_pts_map, pos_map
+            )
 
             total_gw_points = xi_pts + cap_pts + sub_pts - hits_cost
 
             # FT accumulation logic (up to 5 FTs)
-            remaining_fts = max(0, fts - t_made)
-            fts = min(MAX_FREE_TRANSFERS, remaining_fts + 1)
+            if active_chip == "wildcard":
+                fts = 1
+            else:
+                remaining_fts = max(0, fts - t_made)
+                fts = min(MAX_FREE_TRANSFERS, remaining_fts + 1)
+
+            chip_label = f" ({active_chip.upper()})" if active_chip else ""
 
             ledger.append({
                 "gameweek": gw,
@@ -131,11 +206,12 @@ class WalkForwardBacktestHarness:
                 "transfers_made": t_made,
                 "hits_cost": hits_cost,
                 "captain_id": captain,
-                "auto_subs_used": subs_used
+                "auto_subs_used": subs_used,
+                "active_chip": active_chip or "None"
             })
 
             if verbose:
-                print(f"GW {gw:02d} | Points: {total_gw_points:3d} (Hits: -{hits_cost}) | Transfers: {t_made} | Bank: £{bank:.1f}m | FTs: {fts}")
+                print(f"GW {gw:02d}{chip_label} | Points: {total_gw_points:3d} (Hits: -{hits_cost}) | Transfers: {t_made} | Bank: £{bank:.1f}m | FTs: {fts}")
 
         res_df = pd.DataFrame(ledger)
         if not res_df.empty:
@@ -146,3 +222,4 @@ class WalkForwardBacktestHarness:
                 print(f"✅ Backtest complete! Log saved to {out_path}")
 
         return res_df
+

@@ -12,7 +12,11 @@ import sqlite3
 import pandas as pd
 import numpy as np
 import requests
-from config import DB_PATH, CSV_PATH, ELO_CACHE_PATH, HTTP_HEADERS, DATA_DIR
+from config import (
+    DB_PATH, CSV_PATH, ELO_CACHE_PATH, HTTP_HEADERS, DATA_DIR,
+    ODDS_API_KEY, ODDS_API_URL, ODDS_CACHE_PATH, ODDS_CACHE_TTL_HOURS, ODDS_MIN_REFRESH_INTERVAL_HOURS
+)
+from devig_engine import SharpOddsEngine
 
 FPL_API_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 FIXTURES_URL = "https://fantasy.premierleague.com/api/fixtures/"
@@ -93,6 +97,26 @@ def initialize_database():
                 key TEXT PRIMARY KEY,
                 value TEXT,
                 timestamp DATETIME
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sharp_odds_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                home_team TEXT,
+                away_team TEXT,
+                commence_time TEXT,
+                home_win_odds REAL,
+                draw_odds REAL,
+                away_win_odds REAL,
+                over_25_odds REAL,
+                under_25_odds REAL,
+                home_win_prob REAL,
+                draw_prob REAL,
+                away_win_prob REAL,
+                home_cs_prob REAL,
+                away_cs_prob REAL,
+                bookmaker TEXT,
+                last_updated DATETIME
             )
         """)
         cur.execute("""
@@ -458,51 +482,252 @@ def load_player_history():
 
     return pd.DataFrame()
 
-def fetch_live_sharp_odds(cache_ttl_days=2):
+ODDS_TO_FPL_TEAM_MAP = {
+    'Arsenal': 'Arsenal', 'Aston Villa': 'Aston Villa', 'Bournemouth': 'Bournemouth',
+    'AFC Bournemouth': 'Bournemouth', 'Brentford': 'Brentford', 'Brighton': 'Brighton',
+    'Brighton and Hove Albion': 'Brighton', 'Chelsea': 'Chelsea', 'Coventry City': 'Coventry City',
+    'Coventry': 'Coventry City', 'Crystal Palace': 'Crystal Palace', 'Everton': 'Everton',
+    'Fulham': 'Fulham', 'Hull City': 'Hull City', 'Hull': 'Hull City',
+    'Ipswich Town': 'Ipswich Town', 'Ipswich': 'Ipswich Town', 'Leeds': 'Leeds',
+    'Leeds United': 'Leeds', 'Liverpool': 'Liverpool', 'Manchester City': 'Man City',
+    'Man City': 'Man City', 'Manchester United': 'Man Utd', 'Man United': 'Man Utd',
+    'Newcastle United': 'Newcastle', 'Newcastle': 'Newcastle', 'Nottingham Forest': "Nott'm Forest",
+    "Nott'm Forest": "Nott'm Forest", 'Tottenham Hotspur': 'Spurs', 'Tottenham': 'Spurs',
+    'Spurs': 'Spurs', 'Sunderland': 'Sunderland', 'Sunderland AFC': 'Sunderland',
+    'West Ham United': 'West Ham', 'West Ham': 'West Ham', 'Wolverhampton Wanderers': 'Wolves',
+    'Wolves': 'Wolves', 'Leicester City': 'Leicester', 'Leicester': 'Leicester',
+    'Southampton': 'Southampton'
+}
+
+def generate_fallback_odds_from_elo():
+    """Generates synthetic devigged market odds from live ClubElo ratings if API is unreachable."""
+    elo_dict = fetch_clubelo_ratings()
+    fixtures = get_full_fpl_schedule()
+    rows = []
+    if not fixtures.empty:
+        gw1 = fixtures[fixtures['event'] == 1]
+        for _, r in gw1.iterrows():
+            h_team, a_team = r['home_team'], r['away_team']
+            h_elo = float(elo_dict.get(h_team, 1750.0))
+            a_elo = float(elo_dict.get(a_team, 1750.0))
+            net_delta = (h_elo + 60.0) - a_elo
+            
+            p_h = np.clip(0.38 + net_delta / 800.0, 0.10, 0.85)
+            p_a = np.clip(0.34 - net_delta / 800.0, 0.05, 0.75)
+            p_d = max(0.10, 1.0 - p_h - p_a)
+            tot_p = p_h + p_d + p_a
+            p_h, p_d, p_a = p_h/tot_p, p_d/tot_p, p_a/tot_p
+            
+            cs_h = np.clip(0.25 + net_delta / 2000.0, 0.10, 0.65)
+            cs_a = np.clip(0.20 - net_delta / 2000.0, 0.05, 0.55)
+            
+            rows.append({
+                "home_team": h_team,
+                "away_team": a_team,
+                "commence_time": str(r.get('kickoff_time', '')),
+                "home_win_odds": round(1.0 / max(p_h, 0.01), 2),
+                "draw_odds": round(1.0 / max(p_d, 0.01), 2),
+                "away_win_odds": round(1.0 / max(p_a, 0.01), 2),
+                "over_25_odds": 1.85,
+                "under_25_odds": 1.95,
+                "home_win_prob": round(float(p_h), 3),
+                "draw_prob": round(float(p_d), 3),
+                "away_win_prob": round(float(p_a), 3),
+                "home_cs_prob": round(float(cs_h), 3),
+                "away_cs_prob": round(float(cs_a), 3),
+                "bookmaker": "ClubElo Quantitative Engine (Fallback)"
+            })
+    return pd.DataFrame(rows)
+
+def fetch_live_sharp_odds(cache_ttl_hours=ODDS_CACHE_TTL_HOURS, force_refresh=False):
     """
-    Fetches sharp bookmaker odds for Premier League match markets.
-    Caches odds locally for 2-3 days (odds give general direction, real-time sync not needed).
+    Fetches real-time Premier League odds from The-Odds-API (UK sharp bookmakers).
+    Implements multi-layer guardrails to prevent API quota exhaustion:
+    1. 48-hour local disk cache (reduces API calls to ~15 requests/month).
+    2. 12-hour strict anti-exhaustion throttle (blocks rapid manual re-triggers).
+    3. Scoped strictly to English Premier League ('soccer_epl').
+    4. De-vigs odds using Shin's algorithm into true probabilities.
+    5. Graceful fallback to ClubElo ratings if offline or API quota is exhausted.
     """
-    cache_path = os.path.join(DATA_DIR, "sharp_odds_cache.csv")
-    if os.path.exists(cache_path):
-        mtime = os.path.getmtime(cache_path)
-        age_days = (time.time() - mtime) / (24 * 3600)
-        if age_days < cache_ttl_days:
+    initialize_database()
+    conn = get_db_connection()
+    
+    # 1. Check local file/DB cache freshness
+    if not force_refresh and os.path.exists(ODDS_CACHE_PATH):
+        try:
+            mtime = os.path.getmtime(ODDS_CACHE_PATH)
+            age_hours = (time.time() - mtime) / 3600.0
+            if age_hours < cache_ttl_hours:
+                df_cached = pd.read_csv(ODDS_CACHE_PATH)
+                if not df_cached.empty:
+                    return df_cached
+        except Exception:
+            pass
+
+    # 2. Check 12-hour strict throttle (anti-quota burnout safeguard)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT timestamp FROM meta_cache WHERE key = 'last_odds_api_sync'")
+        row = cur.fetchone()
+        if row and row[0]:
+            last_dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+            time_since_call_hours = (datetime.datetime.now() - last_dt).total_seconds() / 3600.0
+            if time_since_call_hours < ODDS_MIN_REFRESH_INTERVAL_HOURS and not force_refresh:
+                if os.path.exists(ODDS_CACHE_PATH):
+                    return pd.read_csv(ODDS_CACHE_PATH)
+    except Exception:
+        pass
+
+    # 3. Fetch from The-Odds-API if API key is present
+    if ODDS_API_KEY:
+        try:
+            url = ODDS_API_URL
+            params = {
+                "apiKey": ODDS_API_KEY,
+                "regions": "uk",
+                "markets": "h2h,totals",
+                "oddsFormat": "decimal"
+            }
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                remaining = resp.headers.get("x-requests-remaining", "500")
+                used = resp.headers.get("x-requests-used", "0")
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                cur = conn.cursor()
+                cur.execute("REPLACE INTO meta_cache (key, value, timestamp) VALUES ('last_odds_api_sync', ?, ?)", (now_str, now_str))
+                cur.execute("REPLACE INTO meta_cache (key, value, timestamp) VALUES ('odds_quota_remaining', ?, ?)", (str(remaining), now_str))
+                cur.execute("REPLACE INTO meta_cache (key, value, timestamp) VALUES ('odds_quota_used', ?, ?)", (str(used), now_str))
+                conn.commit()
+
+                data = resp.json()
+                rows = []
+                for match in data:
+                    h_raw = match.get("home_team", "")
+                    a_raw = match.get("away_team", "")
+                    h_team = ODDS_TO_FPL_TEAM_MAP.get(h_raw, h_raw)
+                    a_team = ODDS_TO_FPL_TEAM_MAP.get(a_raw, a_raw)
+                    commence_time = match.get("commence_time", "")
+                    
+                    bms = match.get("bookmakers", [])
+                    if not bms:
+                        continue
+                    
+                    pref = ["Betfair Sportsbook", "Bet365", "Sky Bet", "Unibet (UK)", "Betfred (UK)", "William Hill"]
+                    bm = bms[0]
+                    for p in pref:
+                        for b in bms:
+                            if b.get("title") == p:
+                                bm = b
+                                break
+                        if bm.get("title") == p:
+                            break
+                    bm_title = bm.get("title", "Market Consensus")
+                    
+                    h_odds, d_odds, a_odds = 2.0, 3.2, 3.5
+                    for m in bm.get("markets", []):
+                        if m.get("key") == "h2h":
+                            for o in m.get("outcomes", []):
+                                if o.get("name") == h_raw: h_odds = float(o.get("price", 2.0))
+                                elif o.get("name") == a_raw: a_odds = float(o.get("price", 3.5))
+                                elif o.get("name") == "Draw": d_odds = float(o.get("price", 3.2))
+                    
+                    over_odds, under_odds = 1.85, 1.95
+                    for m in bm.get("markets", []):
+                        if m.get("key") == "totals":
+                            for o in m.get("outcomes", []):
+                                if o.get("name") == "Over" and float(o.get("point", 2.5)) == 2.5: over_odds = float(o.get("price", 1.85))
+                                elif o.get("name") == "Under" and float(o.get("point", 2.5)) == 2.5: under_odds = float(o.get("price", 1.95))
+                    
+                    probs_h2h = SharpOddsEngine.devig_shins_method(np.array([h_odds, d_odds, a_odds]))
+                    probs_tot = SharpOddsEngine.devig_shins_method(np.array([over_odds, under_odds]))
+                    
+                    p_h, p_d, p_a = probs_h2h[0], probs_h2h[1], probs_h2h[2]
+                    p_over, p_under = probs_tot[0], probs_tot[1]
+                    
+                    cs_h = np.clip(p_h * 0.52 + p_under * 0.28, 0.10, 0.65)
+                    cs_a = np.clip(p_a * 0.48 + p_under * 0.28 - 0.05, 0.05, 0.55)
+                    
+                    rows.append({
+                        "home_team": h_team,
+                        "away_team": a_team,
+                        "commence_time": commence_time,
+                        "home_win_odds": round(h_odds, 2),
+                        "draw_odds": round(d_odds, 2),
+                        "away_win_odds": round(a_odds, 2),
+                        "over_25_odds": round(over_odds, 2),
+                        "under_25_odds": round(under_odds, 2),
+                        "home_win_prob": round(float(p_h), 3),
+                        "draw_prob": round(float(p_d), 3),
+                        "away_win_prob": round(float(p_a), 3),
+                        "home_cs_prob": round(float(cs_h), 3),
+                        "away_cs_prob": round(float(cs_a), 3),
+                        "bookmaker": bm_title
+                    })
+
+                if rows:
+                    df_res = pd.DataFrame(rows)
+                    df_res.to_csv(ODDS_CACHE_PATH, index=False)
+                    
+                    cur.execute("DELETE FROM sharp_odds_cache")
+                    for _, r in df_res.iterrows():
+                        cur.execute("""
+                            INSERT INTO sharp_odds_cache (
+                                home_team, away_team, commence_time, home_win_odds, draw_odds, away_win_odds,
+                                over_25_odds, under_25_odds, home_win_prob, draw_prob, away_win_prob,
+                                home_cs_prob, away_cs_prob, bookmaker, last_updated
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            r['home_team'], r['away_team'], r['commence_time'], r['home_win_odds'], r['draw_odds'],
+                            r['away_win_odds'], r['over_25_odds'], r['under_25_odds'], r['home_win_prob'],
+                            r['draw_prob'], r['away_win_prob'], r['home_cs_prob'], r['away_cs_prob'], r['bookmaker'], now_str
+                        ))
+                    conn.commit()
+                    return df_res
+        except Exception as e:
+            print(f"⚠️ Live Odds API error: {e}. Falling back to cache / ClubElo.")
+        finally:
+            conn.close()
+
+    if os.path.exists(ODDS_CACHE_PATH):
+        try:
+            return pd.read_csv(ODDS_CACHE_PATH)
+        except Exception:
+            pass
+
+    return generate_fallback_odds_from_elo()
+
+def get_odds_quota_info():
+    """Returns metadata about Odds API quota, last sync, and cache freshness."""
+    initialize_database()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT key, value, timestamp FROM meta_cache WHERE key IN ('last_odds_api_sync', 'odds_quota_remaining', 'odds_quota_used')")
+        data = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+        
+        last_sync = data.get('last_odds_api_sync', ('Never', None))[0]
+        remaining = data.get('odds_quota_remaining', ('490', None))[0]
+        used = data.get('odds_quota_used', ('10', None))[0]
+        
+        age_hours = 999.0
+        if last_sync != 'Never':
             try:
-                return pd.read_csv(cache_path)
+                dt = datetime.datetime.strptime(last_sync, "%Y-%m-%d %H:%M:%S")
+                age_hours = round((datetime.datetime.now() - dt).total_seconds() / 3600.0, 1)
             except Exception:
                 pass
+                
+        return {
+            "last_sync": last_sync,
+            "remaining": remaining,
+            "used": used,
+            "age_hours": age_hours,
+            "is_fresh": age_hours < ODDS_CACHE_TTL_HOURS
+        }
+    finally:
+        conn.close()
 
-    # Build default / fallback sharp odds matrix
-    sample_odds = [
-        {"team": "Man City", "win_odds": 1.25, "cs_odds": 1.90, "over_25_odds": 1.50},
-        {"team": "Arsenal", "win_odds": 1.35, "cs_odds": 1.95, "over_25_odds": 1.60},
-        {"team": "Liverpool", "win_odds": 1.40, "cs_odds": 2.00, "over_25_odds": 1.55},
-        {"team": "Chelsea", "win_odds": 1.70, "cs_odds": 2.40, "over_25_odds": 1.65},
-        {"team": "Tottenham", "win_odds": 1.80, "cs_odds": 2.60, "over_25_odds": 1.60},
-        {"team": "Newcastle", "win_odds": 1.75, "cs_odds": 2.50, "over_25_odds": 1.70},
-        {"team": "Aston Villa", "win_odds": 1.85, "cs_odds": 2.70, "over_25_odds": 1.70},
-        {"team": "Man United", "win_odds": 1.90, "cs_odds": 2.80, "over_25_odds": 1.75}
-    ]
-    df_odds = pd.DataFrame(sample_odds)
-    df_odds.to_csv(cache_path, index=False)
-    return df_odds
-
-
-    # CSV Fallback
-    if os.path.exists(CSV_PATH):
-        df = pd.read_csv(CSV_PATH)
-        if 'name' not in df.columns and 'player_name' in df.columns:
-            df['name'] = df['player_name']
-        if 'team' not in df.columns and 'team_name' in df.columns:
-            df['team'] = df['team_name']
-        if 'player_id' not in df.columns and 'element' in df.columns:
-            df['player_id'] = df['element']
-        if 'gameweek' not in df.columns and 'round' in df.columns:
-            df['gameweek'] = df['round']
-        return df
-
-    return pd.DataFrame()
 
 def get_full_fpl_schedule():
     """Loads all 380 Premier League fixtures mapped to team names, ClubElo per game, and FDR difficulty."""
@@ -601,3 +826,46 @@ def get_player_availability_df():
     finally:
         conn.close()
     return pd.DataFrame()
+
+
+def get_price_change_radar_df():
+    """
+    Returns player price rise/fall velocity radar data based on net transfer flow.
+    Calculates target progress towards +/- 100% net transfer threshold for midnight price changes.
+    """
+    conn = get_db_connection()
+    try:
+        query = """
+            SELECT p.id, p.web_name, p.position, t.name as team, p.now_cost,
+                   p.selected_by_percent, p.transfers_in_event, p.transfers_out_event
+            FROM players_meta p
+            LEFT JOIN teams t ON p.team_id = t.id
+        """
+        df = pd.read_sql(query, conn)
+        if not df.empty:
+            df["cost"] = df["now_cost"] / 10.0
+            df["net_transfers"] = df["transfers_in_event"] - df["transfers_out_event"]
+            threshold = 40000.0
+            df["target_progress_pct"] = np.clip((df["net_transfers"] / threshold) * 100.0, -100.0, 100.0)
+            
+            def get_price_status(row):
+                prog = row["target_progress_pct"]
+                if prog >= 90.0:
+                    return "🔥 IMMINENT RISE (+£0.1m)"
+                elif prog >= 40.0:
+                    return "⚡ BUYING MOMENTUM"
+                elif prog <= -90.0:
+                    return "❄️ IMMINENT FALL (-£0.1m)"
+                elif prog <= -40.0:
+                    return "⚠️ SELLING PRESSURE"
+                else:
+                    return "STABLE"
+                    
+            df["status_badge"] = df.apply(get_price_status, axis=1)
+            return df.rename(columns={"id": "player_id", "web_name": "name"})
+    except Exception as e:
+        print(f"⚠️ Price radar error: {e}")
+    finally:
+        conn.close()
+    return pd.DataFrame()
+

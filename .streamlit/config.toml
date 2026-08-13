@@ -1,11 +1,8 @@
 [server]
-port = 8080
-address = "0.0.0.0"
-headless = true
-enableCORS = false
-enableXsrfProtection = false
-enableWebsocketCompression = false
-maxUploadSize = 200
+port = 8501
+address = "localhost"
+headless = false
 
 [browser]
-gatherUsageStats = false
+serverAddress = "localhost"
+serverPort = 8501

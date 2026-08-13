@@ -9,10 +9,32 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# Safely load local .env without third-party dependencies (gitignored)
+ENV_FILE = os.path.join(BASE_DIR, ".env")
+if os.path.exists(ENV_FILE):
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+    except Exception:
+        pass
+
 # Database and Data File Paths
 DB_PATH = os.path.join(DATA_DIR, "fpl_system.db")
 CSV_PATH = os.path.join(DATA_DIR, "fpl_all_player_data.csv")
 ELO_CACHE_PATH = os.path.join(DATA_DIR, "elo_cache.csv")
+ODDS_CACHE_PATH = os.path.join(DATA_DIR, "sharp_odds_cache.csv")
+
+# The-Odds-API Integration Configuration (Never hardcoded in Git; injected via env / Secret Manager)
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
+ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
+ODDS_CACHE_TTL_HOURS = 48.0              # 48-hour local cache (only ~15 API calls/month)
+ODDS_MIN_REFRESH_INTERVAL_HOURS = 12.0   # Strict anti-exhaustion throttle: minimum 12h between calls
 
 # Model Predictive Control (MPC) Horizon Parameters
 ROLLING_HORIZON_WEEKS = 6    # Optimize over 6 rolling gameweeks

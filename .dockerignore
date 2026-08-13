@@ -10,3 +10,7 @@ __pycache__/
 tests/
 *.code-workspace
 data/*.db
+.env
+.env.*
+secrets.toml
+.streamlit/secrets.toml

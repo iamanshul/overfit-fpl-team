@@ -37,13 +37,14 @@ class MultiPeriodMILP:
             self.players = []
             self.gws = []
 
-    def solve_rolling_horizon(self, initial_squad, initial_bank, initial_fts=1, active_chip=None, formation=None, locked_player_ids=None, min_squad_cost=None, max_budget=None, risk_aversion=0.0, purchase_prices=None):
+    def solve_rolling_horizon(self, initial_squad, initial_bank, initial_fts=1, active_chip=None, formation=None, locked_player_ids=None, min_squad_cost=None, max_budget=None, risk_aversion=0.0, purchase_prices=None, trailing_points_deficit=0):
         """
         Solves optimal squad roadmap across rolling horizon gameweeks.
         min_squad_cost: Minimum total squad cost to force full budget utilization (e.g. 99.0m).
         max_budget: Hard upper bound on total squad wealth (e.g. 100.0m for start of season).
         risk_aversion: Weight lambda (0.0 to 0.5) penalizing same-team double defense variance.
         purchase_prices: Dict of {player_id: purchase_price} to enforce 50% profit tax on sells.
+        trailing_points_deficit: Point gap to rank #1 / mini-league leader for late-season differential pivot.
         """
         if not self.players or not self.gws:
             return {"status": "Infeasible / Empty Data"}
@@ -89,6 +90,9 @@ class MultiPeriodMILP:
 
         # Objective Function: Discounted xP (Starters + Bench Auto-Sub EV) - Hit penalties + Bank Salvage + FT Value
         obj_terms = []
+        price_momentum_map = dict(zip(self.df["player_id"], self.df.get("price_momentum", pd.Series([0.0]*len(self.df)))))
+        npxg_map = dict(zip(self.df["player_id"], self.df.get("r_npxg", pd.Series([0.0]*len(self.df)))))
+
         for t_idx, gw in enumerate(self.gws):
             decay = HORIZON_DECAY_FACTOR ** t_idx
             xp_col = f"xP_{gw}"
@@ -107,17 +111,32 @@ class MultiPeriodMILP:
                 obj_terms.append(decay * bench_weight * bench_var * xp_map[p])
 
                 # 3. Captaincy xP Multiplier + Ceiling Variance Upside + EO Protection Guardrail
-                npxg_map = dict(zip(self.df["player_id"], self.df.get("r_npxg", pd.Series([0.0]*len(self.df)))))
                 cap_upside = float(npxg_map.get(p, 0.0)) * 0.20 # Prioritizes explosive goalscorers with high haul probability
                 eo_boost = (sel_pct_map.get(p, 0.0) / 100.0) * 0.15 if sel_pct_map.get(p, 0.0) >= 50.0 else 0.0
                 obj_terms.append(decay * c[(p, gw)] * (xp_map[p] * (1.0 + cap_upside) + eo_boost))
                 obj_terms.append(decay * 0.05 * v[(p, gw)] * xp_map[p]) # Tie-breaker Vice-Captain preference
+
+                # 4. Wealth Momentum & Price Change Velocity (Early Season GW 1-15)
+                if gw <= 15:
+                    alpha_wealth = 0.50 * (0.90 ** (gw - 1))
+                    p_mom = float(price_momentum_map.get(p, 0.0))
+                    if p_mom > 0:
+                        obj_terms.append(decay * alpha_wealth * tr_in[(p, gw)] * p_mom)
+
+                # 5. Game-Theoretic Rank Policy (Late Season GW 28-38 Differential Hunting)
+                if gw >= 28 and trailing_points_deficit > 15:
+                    beta_diff = min(0.35, (trailing_points_deficit / max(1, 39 - gw)) * 0.04)
+                    sel_p = float(sel_pct_map.get(p, 0.0))
+                    npxg_p = float(npxg_map.get(p, 0.0))
+                    if sel_p < 15.0 and npxg_p >= 0.30:
+                        obj_terms.append(decay * beta_diff * y[(p, gw)] * (npxg_p * 1.5))
 
             if not (active_chip in ["wildcard", "freehit"] and gw == self.gws[0]):
                 obj_terms.append(-TRANSFER_HIT_COST * hits[gw])
 
             # Reward holding free transfers in future gameweeks
             obj_terms.append(decay * FREE_TRANSFER_OPTION_VALUE * (fts_state[gw] - 1))
+
 
         # Portfolio Covariance Risk Penalty (Double/Triple Defense Stacking Penalty)
         gw1 = self.gws[0]

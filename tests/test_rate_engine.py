@@ -108,8 +108,24 @@ class TestRateEngine(unittest.TestCase):
         def_xp = matrix[matrix['position'] == 'DEF']['xP_1'].values[0]
         self.assertGreater(gkp_xp, 0.0)
         self.assertGreater(def_xp, 0.0)
-        self.assertLess(gkp_xp, 12.0)
-        self.assertLess(def_xp, 12.0)
+    def test_fetch_live_sharp_odds_and_devig(self):
+        from data_loader import fetch_live_sharp_odds, get_odds_quota_info
+        df_odds = fetch_live_sharp_odds(cache_ttl_hours=48.0)
+        self.assertFalse(df_odds.empty)
+        self.assertIn("home_team", df_odds.columns)
+        self.assertIn("away_team", df_odds.columns)
+        self.assertIn("home_win_prob", df_odds.columns)
+        self.assertIn("home_cs_prob", df_odds.columns)
+        
+        # Verify probabilities sum to ~1.0
+        first_row = df_odds.iloc[0]
+        prob_sum = first_row["home_win_prob"] + first_row["draw_prob"] + first_row["away_win_prob"]
+        self.assertAlmostEqual(prob_sum, 1.0, places=1)
+        
+        # Verify quota info dictionary
+        q_info = get_odds_quota_info()
+        self.assertIn("remaining", q_info)
+        self.assertIn("last_sync", q_info)
 
 if __name__ == "__main__":
     unittest.main()

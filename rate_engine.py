@@ -90,13 +90,14 @@ class CanonicalRateEngine:
         rates["start_prob"] = grouped["minutes"].apply(lambda s: ewma((s >= 45).astype(float), span=6))
         rates["recent_mins"] = grouped["minutes"].apply(lambda s: ewma(s, span=6))
 
-        # Two-stage Expected Minutes (xM) model with Total Season Minutes Reliability Scaling
-        raw_xm = np.where(
-            rates["start_prob"] >= 0.6,
-            np.maximum(rates["recent_mins"], 65.0),
-            rates["recent_mins"] * rates["start_prob"]
-        )
-        mins_reliability_factor = np.clip(rates["total_mins"] / 1000.0, 0.15, 1.0)
+        # Two-Part Hurdle Expected Minutes Model (P(Start)*E[M|Start] + P(Sub)*E[M|Sub])
+        p_start_base = np.clip(rates["start_prob"] * (rates["chance_of_playing"] / 100.0), 0.0, 1.0)
+        e_mins_start = np.where(p_start_base >= 0.5, np.maximum(rates["recent_mins"], 75.0), 70.0)
+        p_sub_in = np.where(p_start_base < 0.85, (1.0 - p_start_base) * 0.55, 0.0)
+        e_mins_sub = 18.0
+
+        raw_xm = p_start_base * e_mins_start + p_sub_in * e_mins_sub
+        mins_reliability_factor = np.clip(rates["total_mins"] / 900.0, 0.20, 1.0)
         rates["xM"] = np.clip(raw_xm * mins_reliability_factor, 0.0, 90.0)
 
         # Yellow Card Suspension Warning (4 cards = elevated 0.90x xM penalty)
@@ -153,6 +154,10 @@ class CanonicalRateEngine:
 
         rates["r_goal"] = np.clip(weight_obs * raw_r_goal + (1.0 - weight_obs) * pos_prior_goal, 0.0, 0.95)
         rates["r_assist"] = np.clip(weight_obs * raw_r_assist + (1.0 - weight_obs) * pos_prior_assist, 0.0, 0.70)
+
+        # Set-Piece & Corner Dead-Ball Delivery Assist Boost
+        is_set_piece_taker = (rates.get("corners_and_indirect_freekicks_order", 0) == 1) | (rates.get("direct_freekicks_order", 0) == 1)
+        rates["r_assist"] = np.where(is_set_piece_taker, rates["r_assist"] + 0.06, rates["r_assist"])
         
         # Penalty Duty Decomposition: API penalties_order == 1 or known_pen_takers list
         known_pen_takers = ["Haaland", "Palmer", "Saka", "B.Fernandes", "Salah", "Isak", "Watkins", "Solanke", "Son", "Gyökeres", "Mateta", "Mbeumo", "Wood", "João Pedro", "Bruno G.", "Eze"]
@@ -184,9 +189,14 @@ class CanonicalRateEngine:
         rates["r_npxg"] = np.where(is_tall & rates["position"].isin(["DEF", "FWD"]), rates["r_npxg"] + 0.04, rates["r_npxg"])
         rates["r_cbit"] = np.where(is_tall & (rates["position"] == "DEF"), raw_r_cbit + 1.2, raw_r_cbit)
 
+        # Price Rise Velocity & Wealth Momentum (Net Transfer Flow)
+        transfers_net = df.groupby("player_id")["transfers_balance"].last() if "transfers_balance" in df.columns else pd.Series(0, index=rates.index)
+        rates["price_momentum"] = np.clip(rates.index.map(transfers_net).fillna(0.0) / 100000.0 * 0.1, -0.2, 0.2)
+
         rates["r_bonus_base"] = np.clip(raw_r_bonus, 0.0, 1.5)
         rates["r_cards"] = np.clip(raw_r_cards, 0.0, 0.50)
         rates["r_cbirt"] = raw_r_cbirt
+
 
         team_cs = df[df["minutes"] >= 60].groupby("team")["clean_sheets"].mean() if "clean_sheets" in df.columns else pd.Series()
         rates["team_cs_rate"] = rates["team"].map(team_cs).fillna(0.25)
