@@ -33,8 +33,8 @@ ODDS_CACHE_PATH = os.path.join(DATA_DIR, "sharp_odds_cache.csv")
 # The-Odds-API Integration Configuration (Never hardcoded in Git; injected via env / Secret Manager)
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
-ODDS_CACHE_TTL_HOURS = 48.0              # 48-hour local cache (only ~15 API calls/month)
-ODDS_MIN_REFRESH_INTERVAL_HOURS = 12.0   # Strict anti-exhaustion throttle: minimum 12h between calls
+ODDS_CACHE_TTL_HOURS = 120.0              # 5-day / 120-hour local cache (only ~6 API calls/month)
+ODDS_MIN_REFRESH_INTERVAL_HOURS = 24.0   # Strict anti-exhaustion throttle: minimum 24h between manual refreshes
 
 # Model Predictive Control (MPC) Horizon Parameters
 ROLLING_HORIZON_WEEKS = 6    # Optimize over 6 rolling gameweeks

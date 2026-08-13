@@ -543,8 +543,8 @@ def fetch_live_sharp_odds(cache_ttl_hours=ODDS_CACHE_TTL_HOURS, force_refresh=Fa
     """
     Fetches real-time Premier League odds from The-Odds-API (UK sharp bookmakers).
     Implements multi-layer guardrails to prevent API quota exhaustion:
-    1. 48-hour local disk cache (reduces API calls to ~15 requests/month).
-    2. 12-hour strict anti-exhaustion throttle (blocks rapid manual re-triggers).
+    1. 5-day (120-hour) local disk cache (reduces API calls to only ~6 requests/month).
+    2. 24-hour strict anti-exhaustion throttle (blocks rapid manual re-triggers).
     3. Scoped strictly to English Premier League ('soccer_epl').
     4. De-vigs odds using Shin's algorithm into true probabilities.
     5. Graceful fallback to ClubElo ratings if offline or API quota is exhausted.

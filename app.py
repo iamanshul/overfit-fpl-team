@@ -948,12 +948,12 @@ with hub3:
         q1, q2, q3, q4 = st.columns(4)
         with q1: st.metric("Live Market Feed", "The-Odds-API (UK)")
         with q2: st.metric("Remaining Free Quota", f"{quota_info['remaining']} / 500 req")
-        with q3: st.metric("Odds Cache Age", f"{quota_info['age_hours']} hrs" if quota_info['age_hours'] < 900 else "Just Synced", delta="Fresh (48h Lock)" if quota_info['is_fresh'] else "Refresh Eligible")
+        with q3: st.metric("Odds Cache Age", f"{quota_info['age_hours']} hrs" if quota_info['age_hours'] < 900 else "Just Synced", delta="Fresh (5-Day / 120h Lock)" if quota_info['is_fresh'] else "Refresh Eligible")
         with q4: st.metric("Last Sync", quota_info['last_sync'].split()[0] if " " in quota_info['last_sync'] else quota_info['last_sync'])
 
         c_sync_btn, _ = st.columns([1, 3])
         with c_sync_btn:
-            if st.button("🔄 Sync Live Odds (12h Throttled)", key="btn_sync_odds"):
+            if st.button("🔄 Sync Live Odds (24h Throttled)", key="btn_sync_odds"):
                 with st.spinner("Fetching latest Premier League bookmaker odds..."):
                     fetch_live_sharp_odds(force_refresh=True)
                     st.success("✅ Odds cache updated!")

@@ -110,7 +110,7 @@ class TestRateEngine(unittest.TestCase):
         self.assertGreater(def_xp, 0.0)
     def test_fetch_live_sharp_odds_and_devig(self):
         from data_loader import fetch_live_sharp_odds, get_odds_quota_info
-        df_odds = fetch_live_sharp_odds(cache_ttl_hours=48.0)
+        df_odds = fetch_live_sharp_odds(cache_ttl_hours=120.0)
         self.assertFalse(df_odds.empty)
         self.assertIn("home_team", df_odds.columns)
         self.assertIn("away_team", df_odds.columns)
