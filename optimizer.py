@@ -76,9 +76,11 @@ class MultiPeriodMILP:
         hits = {}    # Penalty Hits
         fts_state = {} # Accumulated Free Transfers (1 to 5)
 
+        bank_state = {}
         for t_idx, gw in enumerate(self.gws):
             hits[gw] = pulp.LpVariable(f"hits_{gw}", lowBound=0, cat=pulp.LpInteger)
             fts_state[gw] = pulp.LpVariable(f"fts_{gw}", lowBound=1, upBound=MAX_FREE_TRANSFERS, cat=pulp.LpInteger)
+            bank_state[gw] = pulp.LpVariable(f"bank_state_{gw}", lowBound=0.0, cat=pulp.LpContinuous)
             
             for p in self.players:
                 x[(p, gw)] = pulp.LpVariable(f"x_{p}_{gw}", cat=pulp.LpBinary)
@@ -269,21 +271,22 @@ class MultiPeriodMILP:
             for team_name in set(self.teams.values()):
                 prob += pulp.lpSum([x[(p, gw)] for p in self.players if self.teams[p] == team_name]) <= MAX_PLAYERS_PER_TEAM
 
-            # Budget Constraints:
-            # In GW1: Exact transfer cashflow constraint (Cash spent on buys <= Bank + Cash released from sells at P_sell)
-            if is_gw1 and active_chip not in ["wildcard", "freehit"]:
-                prob += (
-                    pulp.lpSum([tr_in[(q, gw1)] * self.costs[q] for q in self.players])
-                    <= initial_bank + pulp.lpSum([tr_out[(p, gw1)] * selling_costs.get(p, self.costs[p]) for p in self.players])
-                )
-            elif is_gw1 and active_chip in ["wildcard", "freehit"]:
-                prob += pulp.lpSum([x[(p, gw)] * self.costs[p] for p in self.players]) <= initial_liquid_wealth
+            # Multi-Period Exact 50% Profit Tax Cashflow Constraints:
+            if is_gw1:
+                if active_chip in ["wildcard", "freehit"]:
+                    prob += bank_state[gw] == initial_liquid_wealth - pulp.lpSum([x[(p, gw)] * self.costs[p] for p in self.players])
+                    prob += pulp.lpSum([x[(p, gw)] * self.costs[p] for p in self.players]) <= initial_liquid_wealth
+                else:
+                    prob += bank_state[gw] == initial_bank + pulp.lpSum([tr_out[(p, gw)] * selling_costs.get(p, self.costs[p]) for p in self.players]) - pulp.lpSum([tr_in[(p, gw)] * self.costs[p] for p in self.players])
             else:
-                prob += pulp.lpSum([x[(p, gw)] * self.costs[p] for p in self.players]) <= initial_market_wealth
+                prob += bank_state[gw] == bank_state[prev_gw] + pulp.lpSum([tr_out[(p, gw)] * self.costs[p] for p in self.players]) - pulp.lpSum([tr_in[(p, gw)] * self.costs[p] for p in self.players])
             
+            prob += bank_state[gw] >= 0.0
+
             # Minimum Squad Cost Constraint (force maximizing budget)
             if min_squad_cost is not None and is_gw1:
                 prob += pulp.lpSum([x[(p, gw)] * self.costs[p] for p in self.players]) >= min_squad_cost
+
 
         # Solve with multi-solver fallback for Linux and macOS environments
         solver = None
@@ -456,13 +459,14 @@ class MultiPeriodMILP:
         c = {p: pulp.LpVariable(f"cp_{p}", cat="Binary") for p in players}
         v = {p: pulp.LpVariable(f"vc_{p}", cat="Binary") for p in players}
 
-        # Objective: Starting XI 6-week horizon points + GW1 point weight + Captain double + small bench weight
+        # Objective: Starting XI 6-week horizon points + GW1 point weight + Captain double + position-specific bench weight
         prob += pulp.lpSum([
             y[p] * (xp_sum[p] + 0.5 * xp_gw1[p]) +
             c[p] * (xp_sum[p] + 0.5 * xp_gw1[p]) +
-            0.05 * (x[p] - y[p]) * xp_sum[p]
+            (0.025 if pos_dict[p] == "GKP" else (0.16 if pos_dict[p] == "DEF" else 0.12)) * (x[p] - y[p]) * xp_sum[p]
             for p in players
         ])
+
 
         # 1. Total counts: exactly 15 squad members, 11 starters, 1 captain, 1 vice captain
         prob += pulp.lpSum([x[p] for p in players]) == 15

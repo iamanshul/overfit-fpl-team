@@ -58,6 +58,14 @@ class ComponentRateMLEstimator:
             df[ewm_col] = grouped[col].shift(1).transform(lambda x: x.ewm(span=self.window_size, adjust=False).mean()).fillna(0.0)
             feature_cols.append(ewm_col)
 
+        # Positional Stratification Features
+        pos_s = df['position'] if 'position' in df.columns else pd.Series('', index=df.index)
+        df['is_def'] = (pos_s == 'DEF').astype(int)
+        df['is_mid'] = (pos_s == 'MID').astype(int)
+        df['is_fwd'] = (pos_s == 'FWD').astype(int)
+        feature_cols.extend(['is_def', 'is_mid', 'is_fwd'])
+
+
         df['is_starter'] = (df['minutes'] >= 45).astype(int)
         return df, feature_cols
 
@@ -83,6 +91,23 @@ class ComponentRateMLEstimator:
         self.feature_cols = feature_cols
         return True
 
+    @staticmethod
+    def normalize_team_starting_probabilities(players_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Normalizes independent starting probabilities so each team's formation 
+        sums to 11 starters (1 GKP, 4 DEF, 4 MID, 2 FWD).
+        """
+        df = players_df.copy()
+        if 'team' in df.columns and 'position' in df.columns and 'pred_p_start' in df.columns:
+            for team_name, group in df.groupby("team"):
+                for pos, target_count in [("GKP", 1.0), ("DEF", 4.0), ("MID", 4.0), ("FWD", 2.0)]:
+                    pos_mask = (df["team"] == team_name) & (df["position"] == pos)
+                    raw_probs = df.loc[pos_mask, "pred_p_start"].values
+                    if len(raw_probs) > 0 and np.sum(raw_probs) > 0:
+                        scaled_probs = raw_probs * (target_count / np.sum(raw_probs))
+                        df.loc[pos_mask, "pred_p_start"] = np.clip(scaled_probs, 0.0, 1.0)
+        return df
+
     def predict_rates(self, latest_df):
         """Generates predicted npxG90, xA90, and P(Start) per player for upcoming Gameweek."""
         if not self.is_trained or latest_df.empty:
@@ -100,8 +125,14 @@ class ComponentRateMLEstimator:
 
         res_df = pd.DataFrame({
             'player_id': latest_rows['player_id'].values,
+            'team': latest_rows['team'].values if 'team' in latest_rows.columns else '',
+            'position': latest_rows['position'].values if 'position' in latest_rows.columns else '',
             'pred_npxg90': np.round(pred_npxg, 3),
             'pred_xa90': np.round(pred_xa, 3),
             'pred_p_start': np.round(pred_p_start, 3)
         })
+        
+        # Normalize starting probabilities to 11 per team
+        res_df = self.normalize_team_starting_probabilities(res_df)
         return res_df
+

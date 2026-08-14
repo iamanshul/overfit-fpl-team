@@ -32,10 +32,11 @@ class WalkForwardBacktestHarness:
     def _select_initial_squad(self):
         """Builds valid initial 15-man squad prior to start_gw using CanonicalRateEngine projections (no lookahead bias)."""
         from squad_manager import build_gw1_start_of_season_squad
-        squad_df, bank_rem = build_gw1_start_of_season_squad(self.full_history, budget=100.0)
+        squad_df, bank_rem = build_gw1_start_of_season_squad(self.full_history, budget=100.0, max_unspent_bank=0.5)
         if not squad_df.empty:
             squad_ids = squad_df["player_id"].tolist()
             return squad_ids, round(bank_rem, 2)
+
 
         # Fallback to positional rate sorting without total_points lookahead
         pos_quotas = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}

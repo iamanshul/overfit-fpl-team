@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 from config import ROLLING_HORIZON_WEEKS, HORIZON_DECAY_FACTOR
-from devig_engine import SharpOddsEngine
+from devig_engine import SharpOddsEngine, BivariateDixonColes
 
 class CanonicalRateEngine:
     """
@@ -97,8 +97,18 @@ class CanonicalRateEngine:
         e_mins_sub = 18.0
 
         raw_xm = p_start_base * e_mins_start + p_sub_in * e_mins_sub
-        mins_reliability_factor = np.clip(rates["total_mins"] / 900.0, 0.20, 1.0)
-        rates["xM"] = np.clip(raw_xm * mins_reliability_factor, 0.0, 90.0)
+        
+        # Apply Bayesian prior shrinkage for low-sample players instead of a hard penalty
+        is_low_sample = (rates["total_mins"] < 360.0)
+        prior_xm = np.where(rates["position"] == "GKP", 90.0, np.where(rates["cost"] >= 7.0, 75.0, 60.0))
+        weight_obs = np.clip(rates["total_mins"] / 360.0, 0.0, 1.0)
+        
+        rates["xM"] = np.where(
+            is_low_sample,
+            weight_obs * raw_xm + (1.0 - weight_obs) * prior_xm,
+            raw_xm
+        )
+        rates["xM"] = np.clip(rates["xM"], 0.0, 90.0)
 
         # Yellow Card Suspension Warning (4 cards = elevated 0.90x xM penalty)
         rates["on_suspension_warning"] = (rates["yellow_card_accumulation"] == 4)
@@ -108,6 +118,14 @@ class CanonicalRateEngine:
         # Players aged >= 30 suffer progressive recovery decay during <72h turnaround
         age_fatigue_mult = np.clip(1.0 - np.maximum(0.0, rates["age"] - 29.0) * 0.035, 0.70, 1.0)
         rates["xM"] = np.where(rates["has_midweek_uefa"] == 1, rates["xM"] * 0.82 * age_fatigue_mult, rates["xM"])
+
+        # Sub-60 minute early substitution hazard
+        sub_60_h = np.zeros(len(rates), dtype=float)
+        sub_60_h = np.where(rates["yellow_card_accumulation"] >= 4, sub_60_h + 0.10, sub_60_h)
+        sub_60_h = np.where(rates["chance_of_playing"] < 100, sub_60_h + 0.15, sub_60_h)
+        sub_60_h = np.where((rates["has_midweek_uefa"] == 1) & (rates["age"] >= 30), sub_60_h + 0.12, sub_60_h)
+        rates["sub_60_hazard"] = np.clip(sub_60_h, 0.0, 0.45)
+
 
         # Marquee Starter Baseline xM Floor: High-cost active players (£7.0m+ MID/FWD, £5.5m+ DEF/GKP)
         is_marquee_starter = (rates["chance_of_playing"] >= 75) & (rates["status"] == "a") & (
@@ -229,11 +247,21 @@ class CanonicalRateEngine:
             sim_goals = np.random.poisson(np.tile(p_goals, (n_sims, 1)))
             sim_assists = np.random.poisson(np.tile(p_assists, (n_sims, 1)))
 
-            # BPS Tally: 24 pts per goal, 9 pts per assist + baseline noise
-            sim_bps = sim_goals * 24 + sim_assists * 9 + np.random.normal(15, 5, size=(n_sims, len(pids)))
+            # Micro-Action BPS Decomposition by position and defensive action volume
+            base_bps = np.where(
+                group["position"].values == "DEF",
+                group["r_cbit"].values * 1.8 + (effective_xM / 90.0) * 12.0,
+                np.where(
+                    group["position"].values == "MID",
+                    group["r_cbirt"].values * 1.2 + (effective_xM / 90.0) * 8.0,
+                    (effective_xM / 90.0) * 5.0
+                )
+            )
+            sim_bps = sim_goals * 24 + sim_assists * 9 + base_bps + np.random.normal(0, 3, size=(n_sims, len(pids)))
             
             zero_mask = (effective_xM <= 0)
             sim_bps[:, zero_mask] = -999.0
+
 
             bonus_awarded = np.zeros_like(sim_bps, dtype=float)
             k = min(3, len(pids))
@@ -385,57 +413,60 @@ class CanonicalRateEngine:
             xM = matrix["xM"].values * avail_factor
             p90_factor = xM / 90.0
 
-            # Sigmoidal cumulative probability P(Mins >= 60) around xM
-            p_60_mins = 1.0 / (1.0 + np.exp(-(xM - 60.0) / 4.0))
-            p_60_mins = np.where(xM < 40.0, 0.0, p_60_mins)
+            # Sigmoidal cumulative probability P(Mins >= 60) adjusted for sub-60 hazard cliff
+            hazard_factor = 1.0 - matrix["sub_60_hazard"].values if "sub_60_hazard" in matrix.columns else 1.0
+            p_60_mins = (1.0 / (1.0 + np.exp(-(xM - 60.0) / 4.0))) * hazard_factor
+            p_60_mins = np.where(xM < 40.0, 0.0, np.clip(p_60_mins, 0.0, 1.0))
 
             # Component 1: Appearance Points (FPL rules: 1 pt for 1-59 mins, +1 pt for 60+ mins, multiplied by fixture count in DGW)
             p_1_min = np.where(xM < 1.0, 0.0, 1.0 / (1.0 + np.exp(-(xM - 15.0) / 5.0)))
             dgw_mult = matrix["team"].map(dgw_count_map).fillna(1.0).values
             xp_app = (p_1_min * 1.0 + p_60_mins * 1.0) * dgw_mult
 
-            # Component 2: Attacking Returns (Team-Conditioned Dixon-Coles Bivariate Goal Scaling)
+            # Component 2: Attacking Returns (Dirichlet / Softmax Team Goal Share Normalization)
             pts_goal = np.where(matrix["position"] == "FWD", 4.0, np.where(matrix["position"] == "MID", 5.0, 6.0))
             
             # Baseline team goal expectation based on fixture difficulty / Dixon-Coles
             base_team_goals = np.clip(1.35 * att_mult, 0.0, 4.5 * np.maximum(dgw_mult, 1.0))
 
-            # Unscaled expected open-play contribution per player
-            raw_npxg = matrix["r_npxg"] * p90_factor
-            raw_xa = matrix["r_assist"] * p90_factor
+            # Softmax / Dirichlet Normalized Attacking Shares (guarantees exact sum to team capacity)
+            tau = 0.25
+            raw_npxg_safe = np.maximum(matrix["r_npxg"].values, 0.01)
+            raw_xa_safe = np.maximum(matrix["r_assist"].values, 0.01)
 
-            # Calculate team-level attacking volume sums
-            matrix["_temp_npxg"] = raw_npxg
-            matrix["_temp_xa"] = raw_xa
-            team_npxg_sum = matrix.groupby("team")["_temp_npxg"].transform("sum")
-            team_xa_sum = matrix.groupby("team")["_temp_xa"].transform("sum")
+            matrix["_temp_w_npxg"] = np.exp(raw_npxg_safe / tau) * p90_factor
+            matrix["_temp_w_xa"] = np.exp(raw_xa_safe / tau) * p90_factor
 
-            # Compute player attacking volume shares
-            npxg_share = np.where(team_npxg_sum > 0, raw_npxg / np.maximum(team_npxg_sum, 0.75), 0.0)
-            xa_share = np.where(team_xa_sum > 0, raw_xa / np.maximum(team_xa_sum, 0.75), 0.0)
+            team_w_npxg_sum = matrix.groupby("team")["_temp_w_npxg"].transform("sum")
+            team_w_xa_sum = matrix.groupby("team")["_temp_w_xa"].transform("sum")
 
-            # Conditioned expected goals and assists
-            cond_npxg = np.minimum(raw_npxg * att_mult, base_team_goals * npxg_share)
+            npxg_share = np.where(team_w_npxg_sum > 0, matrix["_temp_w_npxg"] / np.maximum(team_w_npxg_sum, 1e-6), 0.0)
+            xa_share = np.where(team_w_xa_sum > 0, matrix["_temp_w_xa"] / np.maximum(team_w_xa_sum, 1e-6), 0.0)
+
+            cond_npxg = base_team_goals * npxg_share
             pen_goals = matrix["p_pen_90"] * p90_factor * 0.79 * att_mult
             exp_goals = cond_npxg + pen_goals
-            exp_assists = np.minimum(raw_xa * att_mult, base_team_goals * 0.80 * xa_share)
+            exp_assists = base_team_goals * 0.75 * xa_share
 
             xp_att = exp_goals * pts_goal + exp_assists * 3.0
-            matrix.drop(columns=["_temp_npxg", "_temp_xa"], inplace=True)
+            matrix.drop(columns=["_temp_w_npxg", "_temp_w_xa"], inplace=True)
 
             # Component 3: Clean Sheet Probability (Scaled per match in DGW)
             pts_cs = np.where(matrix["position"].isin(["GKP", "DEF"]), 4.0, np.where(matrix["position"] == "MID", 1.0, 0.0))
             
             if use_dixon_coles:
-                # Dixon-Coles Clean Sheet Probability P(CS = e^-mu) per match
+                # Bivariate Dixon-Coles Clean Sheet Probability P(CS) with coupling parameter rho = -0.11
                 mu_conceded_per_match = 1.25 * (def_vulnerability.values / np.maximum(dgw_mult, 1.0))
-                prob_cs_per_match = np.where(is_blank, 0.0, np.clip(np.exp(-mu_conceded_per_match), 0.0, 0.65))
+                # Coupling factor tau(0,0) = 1 - lambda * mu * rho increases 0-0 probability slightly in low-scoring games
+                biv_cs_prob = np.clip(np.exp(-mu_conceded_per_match) * (1.0 + 0.11 * mu_conceded_per_match), 0.05, 0.65)
+                prob_cs_per_match = np.where(is_blank, 0.0, biv_cs_prob)
                 prob_cs = prob_cs_per_match * dgw_mult
             else:
                 # Legacy Linear Elo Clean Sheet probability
                 prob_cs = np.where(is_blank, 0.0, matrix["team_cs_rate"].values * def_vulnerability.values)
 
             xp_cs = p_60_mins * prob_cs * pts_cs
+
 
             # Component 3b: Expected Goals Conceded Penalty for GKP & DEF (-1 pt per 2 goals conceded)
             # Discrete Poisson expectation per match: Sum_{k=2..10} floor(k/2) * P(k; mu_conceded)
