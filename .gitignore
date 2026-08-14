@@ -67,3 +67,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.code-workspace
+
+# Personal rules & instructions
+myrules*
+my-rule*
+*myrule*
