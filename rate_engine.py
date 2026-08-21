@@ -221,27 +221,41 @@ class CanonicalRateEngine:
 
         self.player_rates = rates.reset_index()
 
-    def simulate_joint_bps(self, team_df, n_sims=300):
+    def simulate_joint_bps(self, team_df, fix_map=None, n_sims=300):
         """
         Match-by-Match Joint Monte Carlo Bonus Point System (BPS) simulator.
-        Groups players per team/match and allocates 3, 2, 1 bonus points dynamically.
+        Pairs opposing teams in each fixture and allocates 3, 2, 1 bonus points per match across all 22 players.
         """
         if team_df.empty:
             return pd.Series(dtype=float)
 
         all_bonus = pd.Series(0.0, index=team_df.index)
+        processed_teams = set()
 
-        # Group by team to simulate match-level BPS allocation (awards 3, 2, 1 per team/match)
         for team_name, group in team_df.groupby("team"):
-            if group.empty:
+            if team_name in processed_teams:
                 continue
-            pids = group["player_id"].values
-            chances = group.get("chance_of_playing", pd.Series([100]*len(group))).fillna(100)
-            avail_factor = np.clip(chances / 100.0, 0.0, 1.0).values
-            effective_xM = group["xM"].values * avail_factor
 
-            p_goals = (group["r_goal"].values * (effective_xM / 90.0))
-            p_assists = (group["r_assist"].values * (effective_xM / 90.0))
+            # Identify match opponent from fixture schedule
+            opp_name = None
+            if fix_map and team_name in fix_map and len(fix_map[team_name]) > 0:
+                opp_name = fix_map[team_name][0].get('opp')
+
+            if opp_name and opp_name in team_df["team"].values and opp_name not in processed_teams:
+                match_group = team_df[team_df["team"].isin([team_name, opp_name])]
+                processed_teams.add(team_name)
+                processed_teams.add(opp_name)
+            else:
+                match_group = group
+                processed_teams.add(team_name)
+
+            pids = match_group["player_id"].values
+            chances = match_group.get("chance_of_playing", pd.Series([100]*len(match_group))).fillna(100)
+            avail_factor = np.clip(chances / 100.0, 0.0, 1.0).values
+            effective_xM = match_group["xM"].values * avail_factor
+
+            p_goals = (match_group["r_goal"].values * (effective_xM / 90.0))
+            p_assists = (match_group["r_assist"].values * (effective_xM / 90.0))
 
             # Sample Poisson events
             sim_goals = np.random.poisson(np.tile(p_goals, (n_sims, 1)))
@@ -249,11 +263,11 @@ class CanonicalRateEngine:
 
             # Micro-Action BPS Decomposition by position and defensive action volume
             base_bps = np.where(
-                group["position"].values == "DEF",
-                group["r_cbit"].values * 1.8 + (effective_xM / 90.0) * 12.0,
+                match_group["position"].values == "DEF",
+                match_group["r_cbit"].values * 1.8 + (effective_xM / 90.0) * 12.0,
                 np.where(
-                    group["position"].values == "MID",
-                    group["r_cbirt"].values * 1.2 + (effective_xM / 90.0) * 8.0,
+                    match_group["position"].values == "MID",
+                    match_group["r_cbirt"].values * 1.2 + (effective_xM / 90.0) * 8.0,
                     (effective_xM / 90.0) * 5.0
                 )
             )
@@ -261,7 +275,6 @@ class CanonicalRateEngine:
             
             zero_mask = (effective_xM <= 0)
             sim_bps[:, zero_mask] = -999.0
-
 
             bonus_awarded = np.zeros_like(sim_bps, dtype=float)
             k = min(3, len(pids))
@@ -273,9 +286,10 @@ class CanonicalRateEngine:
 
             bonus_awarded[:, zero_mask] = 0.0
             exp_bonus = np.mean(bonus_awarded, axis=0)
-            all_bonus.loc[group.index] = exp_bonus
+            all_bonus.loc[match_group.index] = exp_bonus
 
         return all_bonus
+
 
     def _get_fixtures_map(self, gw):
         """Retrieves dict mapping team_name -> list of fixture dicts for gameweek gw."""
@@ -487,8 +501,9 @@ class CanonicalRateEngine:
             xp_saves = np.where(matrix["position"] == "GKP", p_1_min * exp_saves, 0.0)
 
             # Component 4: Standard Bonus & Cards
-            sim_bonus = self.simulate_joint_bps(matrix, n_sims=150) if w == 0 else pd.Series(p90_factor * matrix["r_bonus_base"] * dgw_mult, index=matrix.index)
+            sim_bonus = self.simulate_joint_bps(matrix, fix_map=fix_map, n_sims=150) if w == 0 else pd.Series(p90_factor * matrix["r_bonus_base"] * dgw_mult, index=matrix.index)
             xp_bonus = sim_bonus.values if isinstance(sim_bonus, pd.Series) else sim_bonus
+
 
             # Component 5: 2025/26 Defensive Bonus Rules (CBIT & CBIRT)
             def_lam_cbit = np.maximum(matrix["r_cbit"].values * p90_factor, 0.1)

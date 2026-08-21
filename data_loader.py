@@ -384,39 +384,47 @@ def check_and_auto_update_data(max_age_hours=2.0):
 
 def fetch_clubelo_ratings(target_date=None):
     """Fetches Elo ratings from ClubElo for current or historical target_date (YYYY-MM-DD) with cache fallback."""
+    # Comprehensive Premier League 2026/27 Elo power ratings baseline
+    default_elo = {
+        'Arsenal': 2040, 'Man City': 2060, 'Liverpool': 2020, 'Chelsea': 1860,
+        'Newcastle': 1840, 'Spurs': 1850, 'Aston Villa': 1830, 'Brighton': 1810,
+        'Man Utd': 1800, 'Brentford': 1770, 'Fulham': 1740, 'Crystal Palace': 1730,
+        'Nott\'m Forest': 1730, 'Bournemouth': 1720, 'Everton': 1710, 'Wolves': 1690,
+        'West Ham': 1700, 'Leeds': 1650, 'Sunderland': 1620, 'Ipswich Town': 1620,
+        'Coventry City': 1600, 'Hull City': 1580,
+        # Common Aliases
+        'Ipswich': 1620, 'Coventry': 1600, 'Hull': 1580, 'Nottingham Forest': 1730,
+        'Forest': 1730, 'Man United': 1800, 'Tottenham': 1850, 'Manchester City': 2060,
+        'Manchester United': 1800, 'Leicester': 1630, 'Southampton': 1610
+    }
+
     if target_date is None and os.path.exists(ELO_CACHE_PATH):
-        age_days = (time.time() - os.path.getmtime(ELO_CACHE_PATH)) / 86400.0
-        if age_days < 2.0:
-            try:
-                df = pd.read_csv(ELO_CACHE_PATH)
-                return dict(zip(df['Team'], df['Elo']))
-            except Exception:
-                pass
+        try:
+            df = pd.read_csv(ELO_CACHE_PATH)
+            cached_elo = dict(zip(df['Team'], df['Elo']))
+            default_elo.update(cached_elo)
+            return default_elo
+        except Exception:
+            pass
 
     query_date = target_date or (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
     try:
-        resp = requests.get(f"{CLUB_ELO_URL}{query_date}", headers=HTTP_HEADERS, timeout=10)
+        resp = requests.get(f"{CLUB_ELO_URL}{query_date}", headers=HTTP_HEADERS, timeout=3)
         if resp.status_code == 200:
             df = pd.read_csv(io.StringIO(resp.text), header=None, names=['Rank', 'Team', 'country', 'level', 'Elo', 'From', 'To'], on_bad_lines='skip')
             df = df[df['country'] == 'ENG']
             elo_dict = dict(zip(df['Team'], df['Elo']))
+            default_elo.update(elo_dict)
             
             if target_date is None:
-                df_cache = df[['Team', 'Elo']].copy()
+                df_cache = pd.DataFrame(list(default_elo.items()), columns=['Team', 'Elo'])
                 df_cache.to_csv(ELO_CACHE_PATH, index=False)
-            return elo_dict
-    except Exception as e:
-        print(f"⚠️ ClubElo fetch error for {query_date}: {e}")
+            return default_elo
+    except Exception:
+        pass
 
-    # Default fallback Elo map
-    default_elo = {
-        'Arsenal': 2020, 'Aston Villa': 1850, 'Bournemouth': 1740, 'Brentford': 1760,
-        'Brighton': 1810, 'Chelsea': 1840, 'Crystal Palace': 1730, 'Everton': 1700,
-        'Fulham': 1750, 'Ipswich': 1610, 'Leicester': 1630, 'Liverpool': 2030,
-        'Man City': 2070, 'Man Utd': 1790, 'Newcastle': 1850, 'Nott\'m Forest': 1740,
-        'Southampton': 1610, 'Spurs': 1860, 'West Ham': 1730, 'Wolves': 1680
-    }
     return default_elo
+
 
 def load_player_history():
     """Loads player match dataset from SQLite DB, automatically syncing from live FPL API if DB is uninitialized."""
