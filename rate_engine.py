@@ -339,6 +339,7 @@ class CanonicalRateEngine:
             teams = matrix["team"].unique()
             att_mult_map = {}
             def_mult_map = {}
+            market_cs_map = {}
             is_blank_map = {}
             dgw_count_map = {}
 
@@ -355,41 +356,68 @@ class CanonicalRateEngine:
                     dgw_count_map[t] = len(fixtures_for_team)
                     att_sum = 0.0
                     def_sum = 0.0
+                    cs_sum = 0.0
 
                     for fix in fixtures_for_team:
                         opp_t = fix['opp']
                         was_home = fix['was_home']
                         
-                        if elo_dict and t in elo_dict and opp_t in elo_dict:
-                            try:
-                                t_elo = float(elo_dict[t]) + (60.0 if was_home else 0.0)
-                                opp_elo = float(elo_dict[opp_t]) + (0.0 if was_home else 60.0)
-                                net_delta = t_elo - opp_elo
+                        odds_matched = False
+                        if sharp_odds_df is not None and not sharp_odds_df.empty:
+                            if was_home:
+                                match_row = sharp_odds_df[(sharp_odds_df["home_team"] == t) & (sharp_odds_df["away_team"] == opp_t)]
+                                if not match_row.empty:
+                                    cs_prob_val = float(match_row.iloc[0].get("home_cs_prob", 0.30))
+                                    win_prob_val = float(match_row.iloc[0].get("home_win_prob", 0.40))
+                                    att_m = np.clip(win_prob_val * 2.2 + (1.0 - cs_prob_val) * 0.6, 0.4, 2.2)
+                                    def_m = np.clip(1.0 / max(cs_prob_val * 2.8, 0.35), 0.4, 2.0)
+                                    cs_sum += cs_prob_val
+                                    odds_matched = True
+                            else:
+                                match_row = sharp_odds_df[(sharp_odds_df["home_team"] == opp_t) & (sharp_odds_df["away_team"] == t)]
+                                if not match_row.empty:
+                                    cs_prob_val = float(match_row.iloc[0].get("away_cs_prob", 0.25))
+                                    win_prob_val = float(match_row.iloc[0].get("away_win_prob", 0.35))
+                                    att_m = np.clip(win_prob_val * 2.2 + (1.0 - cs_prob_val) * 0.6, 0.4, 2.2)
+                                    def_m = np.clip(1.0 / max(cs_prob_val * 2.8, 0.35), 0.4, 2.0)
+                                    cs_sum += cs_prob_val
+                                    odds_matched = True
 
-                                if use_dixon_coles:
-                                    att_m = np.clip(np.exp(net_delta / 450.0), 0.5, 2.0)
-                                    def_m = np.clip(np.exp(-net_delta / 450.0), 0.4, 1.8)
-                                else:
-                                    lin_m = round(1.0 + net_delta / 1000.0, 2)
-                                    att_m = lin_m
-                                    def_m = np.clip(2.0 - lin_m, 0.4, 1.8)
-                            except (ValueError, TypeError):
-                                att_m, def_m = 1.0, 1.0
-                        else:
-                            seed_val = (hash(t) + gw) % 5
-                            diff_map = {0: 1.20, 1: 1.10, 2: 1.00, 3: 0.90, 4: 0.80}
-                            att_m = diff_map[seed_val]
-                            def_m = 2.0 - att_m
+                        if not odds_matched:
+                            if elo_dict and t in elo_dict and opp_t in elo_dict:
+                                try:
+                                    t_elo = float(elo_dict[t]) + (60.0 if was_home else 0.0)
+                                    opp_elo = float(elo_dict[opp_t]) + (0.0 if was_home else 60.0)
+                                    net_delta = t_elo - opp_elo
+
+                                    if use_dixon_coles:
+                                        att_m = np.clip(np.exp(net_delta / 450.0), 0.5, 2.0)
+                                        def_m = np.clip(np.exp(-net_delta / 450.0), 0.4, 1.8)
+                                    else:
+                                        lin_m = round(1.0 + net_delta / 1000.0, 2)
+                                        att_m = lin_m
+                                        def_m = np.clip(2.0 - lin_m, 0.4, 1.8)
+                                except (ValueError, TypeError):
+                                    att_m, def_m = 1.0, 1.0
+                            else:
+                                seed_val = (hash(t) + gw) % 5
+                                diff_map = {0: 1.20, 1: 1.10, 2: 1.00, 3: 0.90, 4: 0.80}
+                                att_m = diff_map[seed_val]
+                                def_m = 2.0 - att_m
 
                         att_sum += att_m
                         def_sum += def_m
 
                     att_mult_map[t] = att_sum
                     def_mult_map[t] = def_sum
+                    if cs_sum > 0:
+                        market_cs_map[t] = cs_sum / max(len(fixtures_for_team), 1)
 
             att_mult = matrix["team"].map(att_mult_map).fillna(1.0)
             def_vulnerability = matrix["team"].map(def_mult_map).fillna(1.0)
             is_blank = matrix["team"].map(is_blank_map).fillna(False)
+            dgw_mult = matrix["team"].map(dgw_count_map).fillna(1.0).values
+
 
             # Dynamic Gameweek-Specific Availability Factor A_{p, w}
             avail_factor = np.ones(len(matrix), dtype=float)
