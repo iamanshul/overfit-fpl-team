@@ -114,13 +114,58 @@ class ArticleSentimentEngine:
             if "." in name:
                 search_tokens.append(name.split(".")[-1])
             
-            # Common FPL Aliases
+            # Comprehensive FPL Aliases for 2026/27
             alias_map = {
                 "B.Fernandes": ["Bruno Fernandes", "Bruno"],
                 "Bruno G.": ["Bruno Guimaraes", "Guimaraes"],
-                "Alexander-Arnold": ["TAA", "Trent"],
+                "Alexander-Arnold": ["TAA", "Trent", "Trent Alexander-Arnold"],
                 "De Bruyne": ["KDB", "Kevin De Bruyne"],
-                "Van Dijk": ["VVD", "Virgil"]
+                "Van Dijk": ["VVD", "Virgil", "Virgil van Dijk"],
+                "Haaland": ["Erling Haaland", "Haaland"],
+                "Palmer": ["Cole Palmer", "Palmer"],
+                "Semenyo": ["Antoine Semenyo", "Semenyo"],
+                "Wirtz": ["Florian Wirtz", "Wirtz"],
+                "Calvert-Lewin": ["Dominic Calvert-Lewin", "Calvert-Lewin", "DCL"],
+                "João Pedro": ["Joao Pedro", "Pedro"],
+                "Thiago": ["Igor Thiago", "Thiago"],
+                "Groß": ["Pascal Gross", "Pascal Groß", "Gross", "Groß"],
+                "Mosquera": ["Cristhian Mosquera", "Mosquera"],
+                "White": ["Ben White"],
+                "Gabriel": ["Gabriel Magalhaes", "Gabriel"],
+                "van Ewijk": ["Milan van Ewijk", "van Ewijk", "Van Ewijk"],
+                "Thomas": ["Bobby Thomas"],
+                "Diop": ["Issa Diop", "Diop"],
+                "Shaw": ["Luke Shaw", "Shaw"],
+                "Ajer": ["Kristoffer Ajer", "Ajer"],
+                "N.Williams": ["Neco Williams"],
+                "Kinsky": ["Antonin Kinsky", "Kinsky"],
+                "Verbruggen": ["Bart Verbruggen", "Verbruggen"],
+                "Scherpen": ["Kjell Scherpen", "Scherpen"],
+                "Lammens": ["Senne Lammens", "Lammens"],
+                "Dewsbury-Hall": ["Kiernan Dewsbury-Hall", "Dewsbury-Hall", "KDH"],
+                "Gibbs-White": ["Morgan Gibbs-White", "Gibbs-White", "MGW"],
+                "Rogers": ["Morgan Rogers", "Rogers"],
+                "Botman": ["Sven Botman", "Botman"],
+                "Thiaw": ["Malick Thiaw", "Thiaw"],
+                "Bassey": ["Calvin Bassey", "Bassey"],
+                "Justin": ["James Justin", "Justin"],
+                "Konsa": ["Ezri Konsa", "Konsa"],
+                "Van Hecke": ["Jan Paul van Hecke", "van Hecke", "Van Hecke"],
+                "Szoboszlai": ["Dominik Szoboszlai", "Szoboszlai", "Szobo"],
+                "Ndiaye": ["Iliman Ndiaye", "Ndiaye"],
+                "Tzolis": ["Christos Tzolis", "Tzolis"],
+                "Brobbey": ["Brian Brobbey", "Brobbey"],
+                "Igor Jesus": ["Igor Jesus"],
+                "Calafiori": ["Riccardo Calafiori", "Calafiori"],
+                "Hincapie": ["Piero Hincapie", "Hincapie"],
+                "Maguire": ["Harry Maguire", "Maguire"],
+                "Gvardiol": ["Josko Gvardiol", "Gvardiol"],
+                "Raya": ["David Raya", "Raya"],
+                "Senesi": ["Marcos Senesi", "Senesi"],
+                "Tarkowski": ["James Tarkowski", "Tarkowski"],
+                "Lacroix": ["Maxence Lacroix", "Lacroix"],
+                "Pedro Porro": ["Pedro Porro", "Porro"],
+                "Schade": ["Kevin Schade", "Schade"]
             }
             if name in alias_map:
                 search_tokens.extend(alias_map[name])
@@ -147,9 +192,9 @@ class ArticleSentimentEngine:
                 xp_sum = float(row.get("xP_horizon_sum", 20.0))
                 xp_per_pound = xp_sum / max(cost, 1.0)
 
-                # Extract context window around player mention (120 chars before and after)
-                ctx_start = max(0, matched_pos - 120)
-                ctx_end = min(len(article_text), matched_pos + 120)
+                # Extract context window around player mention (150 chars before and after)
+                ctx_start = max(0, matched_pos - 150)
+                ctx_end = min(len(article_text), matched_pos + 150)
                 context_str = article_text[ctx_start:ctx_end].lower()
 
                 # 1. Check for Severe Injury / Ruled Out / Surgery / Suspension
@@ -158,13 +203,19 @@ class ArticleSentimentEngine:
                 injury_doubt_match = re.search(r'doubt|knock|strain|tightness|illness|late fitness test|question mark|touch and go|assessed|minor knock|hamstring|groin', context_str)
                 # 3. Check for Rotation / Rest / Benched / Minutes Management
                 rotation_match = re.search(r'bench|rest|rotate|fatigue|minutes managed|substitute|impact sub|backup|squad rotation', context_str)
-                # 4. Check for High Form / Essential / Praise / In-form / Penalty duty
-                form_match = re.search(r'in form|starting|key player|essential|praise|penalty|hat-trick|sharp|masterclass|undroppable|guaranteed starter', context_str)
+                # 4. Check for Expert Praise / Must Have / Bargain / Undervalued / Penalties
+                positive_match = re.search(r'must have|undervalued|bargain|steal|great value|in form|starting|key player|essential|praise|penalty|penalties|hat-trick|sharp|masterclass|undroppable|guaranteed starter|top talent', context_str)
+                # 5. Check for Avoid / Waste / Poor Form
+                avoid_match = re.search(r'avoid|waste of an asset|struggle|struggling|drought|too expensive|poor', context_str)
 
                 if injury_out_match:
                     verdict = "🔴 RULED OUT / SEVERE INJURY"
                     reasoning = f"Article reports {name} is ruled out/unavailable ({injury_out_match.group(0)}). Zero starting probability."
                     suggested_mult = 0.00
+                elif avoid_match:
+                    verdict = "⚠️ SKEPTICAL (Expert Warning / Overpriced)"
+                    reasoning = f"Article cautions against {name} ({avoid_match.group(0)}). Under-delivers relative to budget allocation."
+                    suggested_mult = 0.85
                 elif injury_doubt_match:
                     verdict = "🟡 DOUBTFUL / KNOCK (Monitor Presser)"
                     reasoning = f"Article mentions fitness doubt for {name} ({injury_doubt_match.group(0)}). Projected minutes discounted by 50%."
@@ -173,9 +224,9 @@ class ArticleSentimentEngine:
                     verdict = "⚠️ ROTATION RISK (Managed Minutes)"
                     reasoning = f"Article suggests rotation/minutes management for {name} ({rotation_match.group(0)}). Sub risk reduces EV."
                     suggested_mult = 0.75
-                elif form_match:
-                    verdict = "✅ SUPPORTED (High Confidence / Form)"
-                    reasoning = f"Article highlights positive tactical role/form for {name} ({form_match.group(0)}) with high manager backing."
+                elif positive_match:
+                    verdict = "✅ SUPPORTED (High Confidence / Expert Pick)"
+                    reasoning = f"Article highlights {name} as high value/tactical pick ({positive_match.group(0)}). Undervalued underlying rate."
                     suggested_mult = 1.20
                 elif r_goal > 0.40 or (pos == "FWD" and xp_sum > 25.0):
                     verdict = "✅ SUPPORTED (Elite Underlying Threat)"
@@ -207,6 +258,7 @@ class ArticleSentimentEngine:
                 })
 
         return pd.DataFrame(results)
+
 
     def apply_user_overrides(self, override_dict):
         """

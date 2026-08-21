@@ -1023,19 +1023,56 @@ with hub4:
         st.header("📰 Article Sentiment & Data-Driven Counter-Argument Engine")
         st.caption("Paste publication articles, expert quotes, or media claims. Evaluates claims using quantitative rates (xG/xA/xM/Elo) and allows custom rate overrides.")
 
+        uploaded_file = st.file_uploader("Or Upload Article / Text Document (.txt, .md, .pdf):", type=["txt", "md", "pdf"], key="article_file_upload")
+
         user_article = st.text_area(
             "Paste Publication Article / Expert Quotes below:",
             height=150,
-            placeholder="e.g. 'Haaland is indispensable for GW1 against Ipswich... Solanke is primed for a haul... Saka has fitness concerns...'",
+            placeholder="e.g. 'Haaland is indispensable for GW1 against Bournemouth... Cole Palmer is underpriced at £9.5m on penalties...'",
             key="article_input_text"
         )
 
+        # Extract text from uploaded file if present
+        combined_text = user_article
+        if uploaded_file is not None:
+            try:
+                fname = uploaded_file.name.lower()
+                if fname.endswith(".pdf"):
+                    raw_bytes = uploaded_file.read()
+                    streams = re.findall(b'stream[\r\n]+(.*?)[\r\n]+endstream', raw_bytes, re.DOTALL)
+                    pdf_chunks = []
+                    for s in streams:
+                        decoded = re.findall(rb'\((.*?)\)[\s]*T[jJ]', s)
+                        for d in decoded:
+                            try:
+                                pdf_chunks.append(d.decode('latin1'))
+                            except Exception:
+                                pass
+                    pdf_text = " ".join(pdf_chunks)
+                    combined_text = (user_article + "\n\n" + pdf_text).strip()
+                else:
+                    file_text = uploaded_file.read().decode("utf-8", errors="ignore")
+                    combined_text = (user_article + "\n\n" + file_text).strip()
+            except Exception as e:
+                st.warning(f"Could not parse uploaded file: {e}")
+
         if st.button("🔍 Analyze Article & Generate Quantitative Counter-Arguments", key="btn_analyze_art"):
-            if user_article.strip() and not matrix.empty:
-                analyzer = ArticleSentimentEngine(matrix, api_key=st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY")))
-                analysis_df = analyzer.analyze_article_llm(user_article)
+            if combined_text.strip() and not matrix.empty:
+                # Safe API Key extraction without crashing when secrets.toml is absent on Cloud Run
+                api_key = None
+                try:
+                    api_key = st.secrets.get("GEMINI_API_KEY")
+                except Exception:
+                    api_key = None
+                if not api_key:
+                    api_key = os.getenv("GEMINI_API_KEY")
+
+                analyzer = ArticleSentimentEngine(matrix, api_key=api_key)
+                analysis_df = analyzer.analyze_article_llm(combined_text)
                 
                 if not analysis_df.empty:
+                    mode_label = "🤖 Gemini 2.5 Flash LLM" if analyzer.client else "⚡ Local Rule-Based NLP"
+                    st.success(f"✅ Successfully extracted {len(analysis_df)} players using {mode_label} engine!")
                     st.subheader(f"Found {len(analysis_df)} Players Mentioned in Article:")
                     for _, row in analysis_df.iterrows():
                         v_type = row["verdict"]
@@ -1061,6 +1098,9 @@ with hub4:
                         st.session_state["manual_overrides"][pid] = new_val
                     
                     st.success("✅ Rate overrides saved in session state! Future solver runs will use these custom weights.")
+                else:
+                    st.info("No active Premier League players recognized in the provided text.")
+
 
     # --- 4.2 BACKTEST SIMULATION ---
     with subtab_lab_backtest:
