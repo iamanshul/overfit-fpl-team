@@ -442,7 +442,43 @@ with hub1:
     # --- 1.2 ACTIVE SQUAD & TRANSFERS ---
     with subtab_squad_active:
         st.header(f"👤 Active Manager Squad (Manager ID: {MY_MANAGER_ID})")
-        st.info("ℹ️ **Active Squad Source**: Loaded from SQLite state / Manager profile `2667805`. Generating a squad in Tab 1 will not alter this tab until you click **'💾 Save as My Active Squad'**.")
+        
+        sync_col1, sync_col2 = st.columns([1, 1])
+        with sync_col1:
+            if st.button("🔄 Sync My Squad Live from FPL API", key="btn_sync_live_fpl", type="secondary"):
+                with st.spinner("Fetching live squad from fantasy.premierleague.com..."):
+                    live_squad = load_manager_2667805_squad(manager_id=MY_MANAGER_ID, gw=1)
+                    if not live_squad.empty:
+                        save_active_squad_state(live_squad, bank=0.0, fts=1)
+                        st.success(f"✅ Successfully synced {len(live_squad)} live picks from official FPL API!")
+                        st.rerun()
+        with sync_col2:
+            if st.button("⚡ Solve Optimal 1-Transfer Move for GW2", key="btn_solve_gw2_move", type="primary"):
+                active_squad_curr, curr_bank, curr_fts = get_active_squad_state()
+                if not active_squad_curr.empty and not matrix.empty:
+                    opt = MultiPeriodMILP(matrix)
+                    base_ids = active_squad_curr["player_id"].tolist()
+                    plan = opt.solve_rolling_horizon(base_ids, initial_bank=curr_bank, initial_fts=curr_fts)
+                    st.session_state["gw2_optimal_plan"] = plan
+
+        if "gw2_optimal_plan" in st.session_state and st.session_state["gw2_optimal_plan"]:
+            plan = st.session_state["gw2_optimal_plan"]
+            if plan.get("status") == "Optimal":
+                st.success("🏆 **Optimal Gameweek 2 Recommended Move (1 Free Transfer)**:")
+                t_in = plan.get("transfers_in", [])
+                t_out = plan.get("transfers_out", [])
+                if t_out and t_in:
+                    p_out = matrix[matrix["player_id"] == t_out[0]].iloc[0]
+                    p_in = matrix[matrix["player_id"] == t_in[0]].iloc[0]
+                    st.markdown(f"### 🔴 **SELL:** `{p_out['name']}` ({p_out['team']}, {p_out['position']} - £{p_out['cost']:.1f}m) ➔ 🟢 **BUY:** `{p_in['name']}` ({p_in['team']}, {p_in['position']} - £{p_in['cost']:.1f}m)")
+                else:
+                    st.info("ℹ️ **Recommendation:** Roll Free Transfer to accumulate 2 FTs for Gameweek 3.")
+                
+                cap_name = matrix.loc[matrix["player_id"] == plan["captain_id"], "name"].values[0] if "captain_id" in plan and not matrix[matrix["player_id"] == plan["captain_id"]].empty else "N/A"
+                vc_name = matrix.loc[matrix["player_id"] == plan.get("vice_captain_id"), "name"].values[0] if plan.get("vice_captain_id") and not matrix[matrix["player_id"] == plan.get("vice_captain_id")].empty else "N/A"
+                st.markdown(f"👑 **Captain:** `{cap_name}` | 🥈 **Vice-Captain:** `{vc_name}` | 📈 **Projected GW2 Starting Points:** `{plan['projected_points_gw1']:.2f} pts`")
+                st.markdown("---")
+
         active_squad, bank, fts = get_active_squad_state()
         
         if not active_squad.empty:
@@ -477,6 +513,7 @@ with hub1:
         with k2: st.metric("Bank Balance", f"£{bank:.1f}m")
         with k3: st.metric("Available Free Transfers", f"{fts} FTs")
         with k4: st.metric("GW1 Total Projected xP", f"{merged_squad['GW1_xP'].fillna(0).sum():.2f} pts")
+
 
         st.markdown("---")
         st.subheader("📋 Active 15-Man Squad Cards & Selection Rationales")

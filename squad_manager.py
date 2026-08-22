@@ -141,29 +141,73 @@ def generate_player_rationale(player_row, gw1_xp=0.0):
     except Exception:
         return "Selected based on baseline quantitative xP model."
 
-def load_manager_2667805_squad():
+def load_manager_2667805_squad(manager_id=MY_MANAGER_ID, gw=1):
     """
-    Loads Manager 2667805's real active squad picks with 100% budget utilization (£100.0m spent, £0.0m bank).
-    Formation: 4-4-2 (11 Starters, 4 Bench).
+    Fetches Manager 2667805's real active squad picks dynamically from official FPL API.
+    Falls back to cached active squad if API is unreachable.
     """
+    import requests
+    try:
+        url = f"https://fantasy.premierleague.com/api/entry/{manager_id}/event/{gw}/picks/"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            picks_data = resp.json().get("picks", [])
+            conn = get_db_connection()
+            meta_df = pd.read_sql("SELECT m.id, m.web_name as name, m.position, m.now_cost, t.name as team FROM players_meta m LEFT JOIN teams t ON m.team_id = t.id", conn)
+            conn.close()
+            meta_map = meta_df.set_index("id").to_dict("index")
+            
+            squad_rows = []
+            for p in picks_data:
+                eid = p["element"]
+                pos_idx = p["position"]
+                is_cap = p["is_captain"]
+                is_vc = p["is_vice_captain"]
+                role = "👑 Captain" if is_cap else ("🥈 Vice Captain" if is_vc else ("Starter" if pos_idx <= 11 else "Bench"))
+                info = meta_map.get(eid, {})
+                squad_rows.append({
+                    "player_id": eid,
+                    "name": info.get("name", f"ID_{eid}"),
+                    "position": info.get("position", "MID"),
+                    "team": info.get("team", "UNK"),
+                    "role": role,
+                    "cost": info.get("now_cost", 50) / 10.0
+                })
+            if squad_rows:
+                return pd.DataFrame(squad_rows)
+    except Exception:
+        pass
+
+    # Fallback to local active squad table or default
+    conn = get_db_connection()
+    try:
+        df = pd.read_sql("SELECT * FROM user_active_squad", conn)
+        if not df.empty and len(df) == 15:
+            return df
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
     default_picks = [
         {"player_id": 1, "name": "Raya", "position": "GKP", "team": "Arsenal", "role": "🥈 Vice Captain", "cost": 6.0},
-        {"player_id": 58, "name": "Forster", "position": "GKP", "team": "Spurs", "role": "Bench", "cost": 4.0},
-        {"player_id": 4, "name": "Gabriel", "position": "DEF", "team": "Arsenal", "role": "Starter", "cost": 8.0},
-        {"player_id": 388, "name": "Guéhi", "position": "DEF", "team": "Crystal Palace", "role": "Starter", "cost": 6.0},
-        {"player_id": 182, "name": "Muñoz", "position": "DEF", "team": "Crystal Palace", "role": "Starter", "cost": 5.5},
-        {"player_id": 8, "name": "Calafiori", "position": "DEF", "team": "Arsenal", "role": "Starter", "cost": 5.5},
-        {"player_id": 34, "name": "Cash", "position": "DEF", "team": "Aston Villa", "role": "Bench", "cost": 4.5},
+        {"player_id": 469, "name": "N.Williams", "position": "DEF", "team": "Nott'm Forest", "role": "Starter", "cost": 5.0},
+        {"player_id": 229, "name": "Tarkowski", "position": "DEF", "team": "Everton", "role": "Starter", "cost": 6.0},
+        {"player_id": 391, "name": "Gvardiol", "position": "DEF", "team": "Man City", "role": "Starter", "cost": 5.5},
         {"player_id": 426, "name": "B.Fernandes", "position": "MID", "team": "Man Utd", "role": "Starter", "cost": 12.0},
-        {"player_id": 427, "name": "Mbeumo", "position": "MID", "team": "Man Utd", "role": "Starter", "cost": 8.0},
-        {"player_id": 40, "name": "Rogers", "position": "MID", "team": "Aston Villa", "role": "Starter", "cost": 7.5},
-        {"player_id": 67, "name": "Cherki", "position": "MID", "team": "Bournemouth", "role": "Starter", "cost": 6.5},
-        {"player_id": 236, "name": "Dewsbury-Hall", "position": "MID", "team": "Everton", "role": "Bench", "cost": 6.5},
-        {"player_id": 55, "name": "Watkins", "position": "FWD", "team": "Aston Villa", "role": "👑 Captain", "cost": 8.0},
-        {"player_id": 106, "name": "Thiago", "position": "FWD", "team": "Brentford", "role": "Starter", "cost": 8.0},
-        {"player_id": 528, "name": "Scarlett", "position": "FWD", "team": "Spurs", "role": "Bench", "cost": 4.0}
+        {"player_id": 368, "name": "Szoboszlai", "position": "MID", "team": "Liverpool", "role": "Starter", "cost": 7.0},
+        {"player_id": 124, "name": "Groß", "position": "MID", "team": "Brighton", "role": "Starter", "cost": 5.5},
+        {"player_id": 542, "name": "E.Le Fée", "position": "MID", "team": "Sunderland", "role": "Starter", "cost": 6.0},
+        {"player_id": 411, "name": "Haaland", "position": "FWD", "team": "Man City", "role": "👑 Captain", "cost": 15.5},
+        {"player_id": 165, "name": "João Pedro", "position": "FWD", "team": "Chelsea", "role": "Starter", "cost": 7.5},
+        {"player_id": 346, "name": "Calvert-Lewin", "position": "FWD", "team": "Leeds", "role": "Starter", "cost": 6.0},
+        {"player_id": 111, "name": "Steele", "position": "GKP", "team": "Brighton", "role": "Bench", "cost": 4.0},
+        {"player_id": 173, "name": "Thomas", "position": "DEF", "team": "Coventry City", "role": "Bench", "cost": 4.0},
+        {"player_id": 290, "name": "Slater", "position": "MID", "team": "Hull City", "role": "Bench", "cost": 4.5},
+        {"player_id": 499, "name": "Pedro Porro", "position": "DEF", "team": "Spurs", "role": "Bench", "cost": 5.5}
     ]
     return pd.DataFrame(default_picks)
+
 
 def save_active_squad_state(squad_df, bank=1.0, fts=1):
     """
