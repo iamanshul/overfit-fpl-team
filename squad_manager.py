@@ -16,7 +16,7 @@ from rate_engine import CanonicalRateEngine
 from optimizer import MultiPeriodMILP
 
 # Manager ID constant
-MY_MANAGER_ID = 2667805
+MY_MANAGER_ID = 2896432
 
 def calculate_selling_price(purchase_price: float, current_price: float) -> float:
     """

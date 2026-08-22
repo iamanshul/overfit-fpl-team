@@ -42,7 +42,7 @@ from chip_evaluator import ChipEvaluator, MacroSeasonChipScheduler
 from backtester import WalkForwardBacktestHarness
 from optimizer import MultiPeriodMILP
 
-MY_MANAGER_ID = 2667805
+MY_MANAGER_ID = 2896432
 
 # Custom CSS for Premium Visual Styling
 st.markdown("""
